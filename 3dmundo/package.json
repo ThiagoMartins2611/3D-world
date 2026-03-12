@@ -1,0 +1,22 @@
+{
+  "name": "3dmundo",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "vite": "^8.0.0-beta.13"
+  },
+  "overrides": {
+    "vite": "^8.0.0-beta.13"
+  },
+  "dependencies": {
+    "@babylonjs/core": "^8.54.3",
+    "@babylonjs/gui": "^8.54.3",
+    "@babylonjs/loaders": "^8.54.3"
+  }
+}
