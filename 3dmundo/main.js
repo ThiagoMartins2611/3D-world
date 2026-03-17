@@ -87,7 +87,7 @@ const createScene = async function () {
         {
             width: 50, 
             height: 50, 
-            subdivisions: 50, 
+            subdivisions: 100, 
             maxHeight: 10,
             onReady: (mesh) => {
                 new BABYLON.PhysicsAggregate(
