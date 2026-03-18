@@ -1,16 +1,18 @@
 import * as BABYLON from '@babylonjs/core';
 import HavokPhysics from '@babylonjs/havok';
+import '@babylonjs/loaders';
+
 
 // ══════════════════════════════════════════════════════════════════════════════
 // NETWORK CONFIG
 // ══════════════════════════════════════════════════════════════════════════════
 const INTERPOLATION_DELAY_MS = 100;
-const RECONCILE_EPS_XZ       = 0.4;
-const MAX_SNAPSHOTS          = 40;
+const RECONCILE_EPS_XZ = 0.4;
+const MAX_SNAPSHOTS = 40;
 const PREDICTION_BUFFER_SIZE = 128;
 
-const IMPULSE_FORCE       = 14;
-const IMPULSE_Y           = 6;
+const IMPULSE_FORCE = 14;
+const IMPULSE_Y = 6;
 const IMPULSE_COOLDOWN_MS = 300;
 
 // Max chat messages kept visible in the DOM
@@ -24,9 +26,9 @@ let localNickname = 'Player';
 
 function waitForNickname() {
     return new Promise((resolve) => {
-        const overlay   = document.getElementById('nickname-overlay');
-        const input     = document.getElementById('nickname-input-field');
-        const btnOk     = document.getElementById('nickname-confirm-btn');
+        const overlay = document.getElementById('nickname-overlay');
+        const input = document.getElementById('nickname-input-field');
+        const btnOk = document.getElementById('nickname-confirm-btn');
 
         function confirm() {
             const raw = input.value.replace(/[<>&"']/g, '').trim();
@@ -48,7 +50,7 @@ function waitForNickname() {
 // ══════════════════════════════════════════════════════════════════════════════
 // CHAT UI HELPERS
 // ══════════════════════════════════════════════════════════════════════════════
-const chatList  = document.getElementById('chat-messages');
+const chatList = document.getElementById('chat-messages');
 const chatInput = document.getElementById('chat-input');
 
 // clientId of self — set after handshake, used to style own messages
@@ -151,29 +153,71 @@ async function createScene() {
     camera.inputs.attached.pointers.buttons = [0];
 
     // ── Terrain ───────────────────────────────────────────────────────────────
-    new BABYLON.MeshBuilder.CreateGroundFromHeightMap(
-        'myground', '/profundidade.jpg',
-        {
-            width: 1000, height: 1000, subdivisions: 100, maxHeight: 10,
-            onReady: (mesh) => {
-                const groundMat     = new BABYLON.StandardMaterial('groundMat', scene);
-                const groundTexture = new BABYLON.Texture('/textura-do-chao.png', scene);
-                groundTexture.uScale = 50;
-                groundTexture.vScale = 50;
-                groundMat.diffuseTexture = groundTexture;
-                mesh.material = groundMat;
-                new BABYLON.PhysicsAggregate(
-                    mesh, BABYLON.PhysicsShapeType.MESH,
-                    { mass: 0, restitution: 0.1, friction: 0.8 }, scene
-                );
-            },
-        }
+    // 1. Função Matemática para gerar o relevo (Substitui a imagem profundidade.jpg)
+    // Em um jogo profissional, você substituiria essa função pela biblioteca "simplex-noise"
+    function getProceduralHeight(x, z) {
+        // Escala altera a "largura" das montanhas. Amplitude altera a "altura".
+        const scale1 = 0.02, amp1 = 8;
+        const scale2 = 0.05, amp2 = 3;
+
+        // Combina ondas para criar morros e vales suaves
+        let y = Math.sin(x * scale1) * Math.cos(z * scale1) * amp1;
+        // Adiciona detalhes menores por cima das montanhas maiores
+        y += Math.sin(x * scale2) * Math.cos(z * scale2) * amp2;
+
+        return y;
+    }
+
+    // 2. Criar o chão plano, mas marcando como UPDATABLE (Atualizável)
+    const ground = BABYLON.MeshBuilder.CreateGround('myground', {
+        width: 1000,
+        height: 1000,
+        subdivisions: 200,
+        updatable: true // IMPORTANTE: Permite que possamos mover os vértices via código
+    }, scene);
+
+    // 3. Pegar os vértices do chão (X, Y, Z) para deformá-los
+    const positions = ground.getVerticesData(BABYLON.VertexBuffer.PositionKind);
+    const indices = ground.getIndices();
+
+    // O array de posições é linear: [x1, y1, z1, x2, y2, z2...]
+    // Vamos pular de 3 em 3 para alterar apenas o Y (Altura) de cada ponto
+    for (let i = 0; i < positions.length; i += 3) {
+        const x = positions[i];
+        const z = positions[i + 2];
+
+        // Aplica a nossa função procedural na altura (Y) baseada no X e Z
+        positions[i + 1] = getProceduralHeight(x, z);
+    }
+
+    // 4. Salvar as novas alturas de volta no terreno
+    ground.updateVerticesData(BABYLON.VertexBuffer.PositionKind, positions);
+
+    // 5. Recalcular as normais (Essencial para a iluminação e sombras fazerem sentido nas subidas/descidas)
+    const normals = [];
+    BABYLON.VertexData.ComputeNormals(positions, indices, normals);
+    ground.updateVerticesData(BABYLON.VertexBuffer.NormalKind, normals);
+
+    // 6. Aplicar os Materiais (Seu código original)
+    const groundMat = new BABYLON.StandardMaterial('groundMat', scene);
+    const groundTexture = new BABYLON.Texture('/textura-do-chao.png', scene);
+    groundTexture.uScale = 50;
+    groundTexture.vScale = 50;
+    groundMat.diffuseTexture = groundTexture;
+    ground.material = groundMat;
+
+    // 7. Aplicar a Física no novo formato do terreno
+    new BABYLON.PhysicsAggregate(
+        ground,
+        BABYLON.PhysicsShapeType.MESH,
+        { mass: 0, restitution: 0.1, friction: 0.8 },
+        scene
     );
 
     // ══════════════════════════════════════════════════════════════════════════
     // NETWORK STATE
     // ══════════════════════════════════════════════════════════════════════════
-    let clientId         = null;
+    let clientId = null;
     let serverTimeOffset = 0;
 
     // Map<id, { mesh, aggregate, label, snapshots[], nickname }>
@@ -182,7 +226,7 @@ async function createScene() {
     let inputSeq = 0;
     const predBuf = [];
 
-    let isAirborne      = false;
+    let isAirborne = false;
     let lastImpulseTime = 0;
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -191,7 +235,7 @@ async function createScene() {
     function spawnRemotePlayer(rid, nickname) {
 
         const mesh = new BABYLON.MeshBuilder.CreateBox(`player_${rid}`, { size: 1 }, scene);
-        const mat  = new BABYLON.StandardMaterial(`mat_${rid}`, scene);
+        const mat = new BABYLON.StandardMaterial(`mat_${rid}`, scene);
         mat.diffuseColor = new BABYLON.Color3(Math.random(), Math.random(), Math.random());
         mesh.material = mat;
         mesh.rotationQuaternion = new BABYLON.Quaternion();
@@ -238,15 +282,15 @@ async function createScene() {
 
         // ── Handshake ─────────────────────────────────────────────────────────
         if (msg.type === 'init') {
-            clientId         = msg.clientId;
-            _selfId          = clientId;  // let chat UI know who "self" is
+            clientId = msg.clientId;
+            _selfId = clientId;  // let chat UI know who "self" is
             serverTimeOffset = msg.serverTime - Date.now();
             console.log(`ID: ${clientId} | clock offset: ${serverTimeOffset}ms`);
 
             // Send our nickname immediately after receiving our ID
             ws.send(JSON.stringify({ type: 'set_nickname', nickname: localNickname }));
 
-        // ── World state ───────────────────────────────────────────────────────
+            // ── World state ───────────────────────────────────────────────────────
         } else if (msg.type === 'world_state') {
 
             for (const [rid, srv] of Object.entries(msg.states)) {
@@ -256,7 +300,7 @@ async function createScene() {
                     const idx = predBuf.findIndex(e => e.seq === srv.s);
                     if (idx === -1) continue;
 
-                    const pred  = predBuf[idx];
+                    const pred = predBuf[idx];
                     const dxErr = pred.pos.x - srv.p.x;
                     const dzErr = pred.pos.z - srv.p.z;
                     const xzErr = Math.sqrt(dxErr * dxErr + dzErr * dzErr);
@@ -281,7 +325,7 @@ async function createScene() {
 
                     predBuf.splice(0, idx + 1);
 
-                // ── Remote player — snapshot ──────────────────────────────────
+                    // ── Remote player — snapshot ──────────────────────────────────
                 } else {
                     // Nickname may arrive in world_state (srv.n)
                     const incomingNick = srv.n || null;
@@ -291,14 +335,14 @@ async function createScene() {
                         otherPlayers.set(rid, p);
                         appendChatMessage({
                             isSystem: true,
-                            message:  `⚡ ${p.nickname} entrou no jogo`,
+                            message: `⚡ ${p.nickname} entrou no jogo`,
                         });
                         console.log('Player joined:', rid, `(${p.nickname})`);
                     } else if (incomingNick) {
                         // Update label if nickname changed
                         const p = otherPlayers.get(rid);
                         if (p.nickname !== incomingNick) {
-                            p.nickname        = incomingNick;
+                            p.nickname = incomingNick;
                             p.label.textContent = incomingNick;
                         }
                     }
@@ -314,30 +358,30 @@ async function createScene() {
                 }
             }
 
-        // ── Nickname update broadcast ─────────────────────────────────────────
+            // ── Nickname update broadcast ─────────────────────────────────────────
         } else if (msg.type === 'player_info') {
             if (msg.clientId === clientId) return; // ignore own echo
             const p = otherPlayers.get(msg.clientId);
             if (p) {
-                p.nickname        = msg.nickname;
+                p.nickname = msg.nickname;
                 p.label.textContent = msg.nickname;
             }
 
-        // ── Chat ──────────────────────────────────────────────────────────────
+            // ── Chat ──────────────────────────────────────────────────────────────
         } else if (msg.type === 'chat') {
             appendChatMessage({
                 clientId: msg.clientId,
                 nickname: msg.nickname,
-                message:  msg.message,
+                message: msg.message,
             });
 
-        // ── Disconnect ────────────────────────────────────────────────────────
+            // ── Disconnect ────────────────────────────────────────────────────────
         } else if (msg.type === 'disconnect') {
             const p = otherPlayers.get(msg.clientId);
             if (p) {
                 appendChatMessage({
                     isSystem: true,
-                    message:  `🔌 ${p.nickname} saiu do jogo`,
+                    message: `🔌 ${p.nickname} saiu do jogo`,
                 });
                 p.aggregate.dispose();
                 p.mesh.dispose();
@@ -371,14 +415,14 @@ async function createScene() {
 
         boxAggregate.body.applyImpulse(dir, box.getAbsolutePosition());
         lastImpulseTime = now;
-        isAirborne      = true;
+        isAirborne = true;
 
         // Immediate state push so the server knows about the velocity spike now
         if (clientId && ws.readyState === WebSocket.OPEN) {
             const seq = ++inputSeq;
             ws.send(JSON.stringify({
                 type: 'state', seq,
-                t:   Date.now() + serverTimeOffset,
+                t: Date.now() + serverTimeOffset,
                 pos: { x: box.position.x, y: box.position.y, z: box.position.z },
                 vel: { x: dir.x, y: dir.y, z: dir.z },
                 rot: quatToObj(box.rotationQuaternion),
@@ -410,7 +454,7 @@ async function createScene() {
 
         const k = kbInfo.event.key.toLowerCase();
         if (kbInfo.type === BABYLON.KeyboardEventTypes.KEYDOWN) keys[k] = true;
-        if (kbInfo.type === BABYLON.KeyboardEventTypes.KEYUP)   keys[k] = false;
+        if (kbInfo.type === BABYLON.KeyboardEventTypes.KEYUP) keys[k] = false;
     });
 
     // Press T to focus chat (and Escape to blur)
@@ -446,19 +490,19 @@ async function createScene() {
     // RENDER LOOP
     // ══════════════════════════════════════════════════════════════════════════
     scene.onBeforeRenderObservable.add(() => {
-        const dt  = Math.min(engine.getDeltaTime() / 1000, 0.05);
+        const dt = Math.min(engine.getDeltaTime() / 1000, 0.05);
         const vel = boxAggregate.body.getLinearVelocity();
 
-        const ray        = new BABYLON.Ray(box.position, new BABYLON.Vector3(0, -1, 0), 1.0);
-        const hit        = scene.pickWithRay(ray, (m) => m.name === 'myground');
+        const ray = new BABYLON.Ray(box.position, new BABYLON.Vector3(0, -1, 0), 1.0);
+        const hit = scene.pickWithRay(ray, (m) => m.name === 'myground');
         const isGrounded = hit.hit;
         if (isGrounded && Math.abs(vel.y) < 1.5) isAirborne = false;
 
         const input = {
-            w: !!(keys['w']         || keys['arrowup']),
-            s: !!(keys['s']         || keys['arrowdown']),
-            a: !!(keys['a']         || keys['arrowleft']),
-            d: !!(keys['d']         || keys['arrowright']),
+            w: !!(keys['w'] || keys['arrowup']),
+            s: !!(keys['s'] || keys['arrowdown']),
+            a: !!(keys['a'] || keys['arrowleft']),
+            d: !!(keys['d'] || keys['arrowright']),
         };
 
         if (keys[' '] && isGrounded) {
@@ -478,9 +522,9 @@ async function createScene() {
         if (input.a) { dirX -= crBab.x; dirZ -= crBab.z; }
 
         const dLen = Math.sqrt(dirX * dirX + dirZ * dirZ);
-        const spd  = 25;
-        const vx   = dLen > 0 ? (dirX / dLen) * spd : 0;
-        const vz   = dLen > 0 ? (dirZ / dLen) * spd : 0;
+        const spd = 25;
+        const vx = dLen > 0 ? (dirX / dLen) * spd : 0;
+        const vz = dLen > 0 ? (dirZ / dLen) * spd : 0;
 
         if (dLen === 0 && isGrounded) {
             const av = boxAggregate.body.getAngularVelocity();
@@ -499,16 +543,16 @@ async function createScene() {
         predBuf.push({
             seq, dt,
             pos: { x: box.position.x, y: box.position.y, z: box.position.z },
-            vel: { x: finalVel.x,     y: finalVel.y,     z: finalVel.z },
+            vel: { x: finalVel.x, y: finalVel.y, z: finalVel.z },
         });
         if (predBuf.length > PREDICTION_BUFFER_SIZE) predBuf.shift();
 
         if (clientId && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({
                 type: 'state', seq,
-                t:   Date.now() + serverTimeOffset,
+                t: Date.now() + serverTimeOffset,
                 pos: { x: box.position.x, y: box.position.y, z: box.position.z },
-                vel: { x: finalVel.x,     y: finalVel.y,     z: finalVel.z },
+                vel: { x: finalVel.x, y: finalVel.y, z: finalVel.z },
                 rot: quatToObj(box.rotationQuaternion),
             }));
         }
@@ -531,7 +575,7 @@ async function createScene() {
                 ip = { ...snaps[0].p };
                 ir = { ...snaps[0].r };
             } else if (lo === snaps.length - 1) {
-                const s    = snaps[lo];
+                const s = snaps[lo];
                 const exDt = Math.min((renderTime - s.t) / 1000, 0.15);
                 ip = {
                     x: s.p.x + s.v.x * exDt,
@@ -540,10 +584,10 @@ async function createScene() {
                 };
                 ir = { ...s.r };
             } else {
-                const s0   = snaps[lo];
-                const s1   = snaps[lo + 1];
+                const s0 = snaps[lo];
+                const s1 = snaps[lo + 1];
                 const span = s1.t - s0.t;
-                const t    = span > 0 ? Math.max(0, Math.min(1, (renderTime - s0.t) / span)) : 0;
+                const t = span > 0 ? Math.max(0, Math.min(1, (renderTime - s0.t) / span)) : 0;
                 ip = {
                     x: s0.p.x + (s1.p.x - s0.p.x) * t,
                     y: s0.p.y + (s1.p.y - s0.p.y) * t,
@@ -567,17 +611,35 @@ async function createScene() {
             if (screenPos.z > 0 && screenPos.z < 1) {
                 Object.assign(player.label.style, {
                     display: 'block',
-                    left:    `${screenPos.x}px`,
-                    top:     `${screenPos.y}px`,
+                    left: `${screenPos.x}px`,
+                    top: `${screenPos.y}px`,
                 });
             } else {
                 player.label.style.display = 'none';
             }
         }
     });
+    // O ImportMeshAsync carrega o modelo e retorna uma Promessa (Promise) quando terminar
+    BABYLON.SceneLoader.ImportMeshAsync(
+        "",                 // Deixe vazio para importar todas as malhas do arquivo
+        "./3D/",               // O caminho da pasta onde está o arquivo
+        "Esmilividu.glb",    // O nome do arquivo
+        scene               // A sua cena atual
+    ).then((resultado) => {
+        console.log("Modelo carregado com sucesso!");
+
+        // O 'resultado.meshes' é um array com todas as partes do seu modelo 3D
+        const todasAsMalhas = resultado.meshes;
+
+        // Opcional: Se o modelo for gigante, você pode diminuí-lo
+        // A malha [0] no GLB geralmente é o nó raiz (Root Node) que agrupa tudo
+        todasAsMalhas[0].scaling = new BABYLON.Vector3(100, 100, 100);
+    });
 
     return scene;
 }
+
+
 
 // ══════════════════════════════════════════════════════════════════════════════
 // MATH HELPERS
@@ -595,9 +657,9 @@ function slerpQuat(q0, q1, t) {
         const len = Math.sqrt(r.x * r.x + r.y * r.y + r.z * r.z + r.w * r.w);
         return { x: r.x / len, y: r.y / len, z: r.z / len, w: r.w / len };
     }
-    const theta0    = Math.acos(dot);
-    const theta     = theta0 * t;
-    const sinTheta  = Math.sin(theta);
+    const theta0 = Math.acos(dot);
+    const theta = theta0 * t;
+    const sinTheta = Math.sin(theta);
     const sinTheta0 = Math.sin(theta0);
     const sc0 = Math.cos(theta) - dot * sinTheta / sinTheta0;
     const sc1 = sinTheta / sinTheta0;
