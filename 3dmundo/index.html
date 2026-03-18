@@ -6,15 +6,203 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>3d-world</title>
   <link rel="stylesheet" href="style.css">
+  <style>
+    /* ── Nickname overlay ────────────────────────────────────────────── */
+    #nickname-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.82);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 9999;
+      font-family: sans-serif;
+    }
+
+    #nickname-overlay.hidden {
+      display: none;
+    }
+
+    #nickname-box {
+      background: #1a1a2e;
+      border: 1px solid #0f3460;
+      border-radius: 12px;
+      padding: 36px 40px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      min-width: 300px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+    }
+
+    #nickname-box h2 {
+      margin: 0;
+      color: #e0e0ff;
+      font-size: 1.4rem;
+      text-align: center;
+      letter-spacing: 1px;
+    }
+
+    #nickname-box p {
+      margin: 0;
+      color: #888;
+      font-size: 0.85rem;
+      text-align: center;
+    }
+
+    #nickname-input-field {
+      padding: 10px 14px;
+      border-radius: 6px;
+      border: 1px solid #0f3460;
+      background: #0d0d1a;
+      color: #fff;
+      font-size: 1rem;
+      outline: none;
+    }
+
+    #nickname-input-field:focus {
+      border-color: #00b4d8;
+    }
+
+    #nickname-confirm-btn {
+      padding: 10px;
+      background: #00b4d8;
+      color: #000;
+      font-weight: bold;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 1rem;
+      transition: background 0.2s;
+    }
+
+    #nickname-confirm-btn:hover {
+      background: #0096c7;
+    }
+
+    /* ── Chat ────────────────────────────────────────────────────────── */
+    .chat-container {
+      position: fixed;
+      bottom: 16px;
+      left: 16px;
+      width: 300px;
+      z-index: 1000;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      font-family: sans-serif;
+      pointer-events: none;
+    }
+
+    #chat-messages {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      max-height: 180px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+
+    /* Scrollbar invisible when chat is passive */
+    #chat-messages::-webkit-scrollbar { width: 4px; }
+    #chat-messages::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 4px; }
+
+    #chat-messages li {
+      background: rgba(0,0,0,0.55);
+      color: #fff;
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-size: 13px;
+      line-height: 1.4;
+      word-break: break-word;
+      animation: fadeIn 0.2s ease;
+    }
+
+    #chat-messages li .chat-nick {
+      font-weight: bold;
+      margin-right: 4px;
+    }
+
+    #chat-messages li .chat-nick.is-self {
+      color: #00e5ff;
+    }
+
+    #chat-messages li .chat-nick.is-other {
+      color: #ffd166;
+    }
+
+    /* System messages (join/leave) */
+    #chat-messages li.sys {
+      color: #aaa;
+      font-style: italic;
+      background: rgba(0,0,0,0.3);
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(4px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    #chat-input {
+      pointer-events: all;
+      padding: 8px 12px;
+      border-radius: 6px;
+      border: 1px solid rgba(255,255,255,0.15);
+      background: rgba(0,0,0,0.6);
+      color: #fff;
+      font-size: 13px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+
+    #chat-input:focus {
+      border-color: #00b4d8;
+      background: rgba(0,0,0,0.8);
+    }
+
+    #chat-input::placeholder {
+      color: rgba(255,255,255,0.35);
+    }
+  </style>
 </head>
 
 <body>
-  
-  <canvas id="renderCanvas">
 
-  </canvas>
+  <!-- ── Nickname overlay — shown before the game starts ── -->
+  <div id="nickname-overlay">
+    <div id="nickname-box">
+      <h2>3D World</h2>
+      <p>Escolha um nickname para entrar</p>
+      <input
+        id="nickname-input-field"
+        type="text"
+        maxlength="20"
+        placeholder="Seu nickname..."
+        autocomplete="off"
+        spellcheck="false"
+      />
+      <button id="nickname-confirm-btn">Entrar no jogo</button>
+    </div>
+  </div>
 
-   <script type="module" src="main.js"></script>
+  <!-- ── Chat ── -->
+  <div class="chat-container">
+    <ul id="chat-messages"></ul>
+    <input
+      type="text"
+      id="chat-input"
+      maxlength="200"
+      placeholder="Enter para falar..."
+      autocomplete="off"
+      spellcheck="false"
+    />
+  </div>
+
+  <canvas id="renderCanvas"></canvas>
+
+  <script type="module" src="main.js"></script>
 </body>
 
 </html>
