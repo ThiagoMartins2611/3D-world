@@ -36,69 +36,69 @@ const createScene = async function () {
     const box = new BABYLON.MeshBuilder.CreateBox("mybox", {
         size: 1, width: 1, height: 1, depth: 1
     });
-    box.position.y = 5; 
-    box.rotationQuaternion = new BABYLON.Quaternion(); 
-    
+    box.position.y = 5;
+    box.rotationQuaternion = new BABYLON.Quaternion();
+
     // Material para a box do jogador
     const boxMaterial = new BABYLON.StandardMaterial("boxMat", scene);
     boxMaterial.diffuse = new BABYLON.Color3(0, 0.8, 1); // Azul
     box.material = boxMaterial;
-    
+
     const boxAggregate = new BABYLON.PhysicsAggregate(
-        box, 
-        BABYLON.PhysicsShapeType.BOX, 
-        { 
-            mass: 1, 
+        box,
+        BABYLON.PhysicsShapeType.BOX,
+        {
+            mass: 1,
             restitution: 0.3,
             friction: 0.8,
-            friction2: 0.8 
-        }, 
+            friction2: 0.8
+        },
         scene
     );
-    
+
     boxAggregate.body.disablePreStep = false;
     const boxMass = 1;
     const boxSize = 1;
     const inertia = (boxMass * boxSize * boxSize) / 6;
-    boxAggregate.body.setMassProperties({ 
+    boxAggregate.body.setMassProperties({
         inertia: new BABYLON.Vector3(inertia, inertia, inertia)
     });
 
     // 4. Câmera
     const camera = new BABYLON.ArcRotateCamera(
-        "camera", 
-        -Math.PI / 2, 
-        Math.PI / 3, 
-        10, 
-        box.position, 
+        "camera",
+        -Math.PI / 2,
+        Math.PI / 3,
+        10,
+        box.position,
         scene
     );
     camera.lockedTarget = box;
     camera.attachControl(canvas, true);
-    
+
     camera.angularSensibilityX = 4000;
     camera.angularSensibilityY = 4000;
-    camera.inputs.attached.pointers.buttons = [0]; 
+    camera.inputs.attached.pointers.buttons = [0];
 
     // 5. Chão com Física Melhorada
     const groundFromHeightMap = new BABYLON.MeshBuilder.CreateGroundFromHeightMap(
-        "myground", 
-        "/profundidade.jpg", 
+        "myground",
+        "/profundidade.jpg",
         {
-            width: 50, 
-            height: 50, 
-            subdivisions: 100, 
+            width: 1000,
+            height: 1000,
+            subdivisions: 100,
             maxHeight: 10,
             onReady: (mesh) => {
                 new BABYLON.PhysicsAggregate(
-                    mesh, 
-                    BABYLON.PhysicsShapeType.MESH, 
-                    { 
+                    mesh,
+                    BABYLON.PhysicsShapeType.MESH,
+                    {
                         mass: 0,
                         restitution: 0.1,
                         friction: 0.8,
                         friction2: 0.8
-                    }, 
+                    },
                     scene
                 );
             }
@@ -110,27 +110,27 @@ const createScene = async function () {
     // ==========================================
     // SISTEMA DE WEBSOCKET (MULTIPLAYER)
     // ==========================================
-    
+
     const otherPlayers = new Map();
     let clientId = null;
     let updateCounter = 0;
-    
+
     // Detectar URL do servidor (desenvolvimento vs produção)
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsHost = window.location.hostname;
     const wsPort = 8080;
     const wsUrl = `${wsProtocol}//${wsHost}:${wsPort}`;
-    
+
     console.log(`Conectando ao servidor WebSocket: ${wsUrl}`);
     const ws = new WebSocket(wsUrl);
-    
+
     ws.onopen = () => {
         console.log('✓ Conectado ao servidor de multiplayer');
     };
-    
+
     ws.onmessage = (event) => {
         const data = JSON.parse(event.data);
-        
+
         if (data.type === 'init') {
             clientId = data.clientId;
             console.log('Seu ID:', clientId);
@@ -147,7 +147,7 @@ const createScene = async function () {
                         Math.random()
                     );
                     otherBox.material = otherMat;
-                    
+
                     // Adicionar label com ID do jogador
                     const label = document.createElement('div');
                     label.textContent = `Player ${data.clientId.substring(0, 8)}`;
@@ -160,18 +160,18 @@ const createScene = async function () {
                     label.style.pointerEvents = 'none';
                     label.style.zIndex = '999';
                     document.body.appendChild(label);
-                    
-                    otherPlayers.set(data.clientId, { 
+
+                    otherPlayers.set(data.clientId, {
                         mesh: otherBox,
                         label: label
                     });
                     console.log('Novo jogador conectado:', data.clientId);
                 }
-                
+
                 const otherPlayer = otherPlayers.get(data.clientId);
                 otherPlayer.mesh.position = new BABYLON.Vector3(
-                    data.position.x, 
-                    data.position.y, 
+                    data.position.x,
+                    data.position.y,
                     data.position.z
                 );
                 otherPlayer.mesh.rotationQuaternion = new BABYLON.Quaternion(
@@ -191,11 +191,11 @@ const createScene = async function () {
             }
         }
     };
-    
+
     ws.onerror = (error) => {
         console.error('❌ Erro WebSocket:', error);
     };
-    
+
     ws.onclose = () => {
         console.log('⚠ Desconectado do servidor');
     };
@@ -203,7 +203,7 @@ const createScene = async function () {
     // ==========================================
     // SISTEMA DE ENTRADAS (TRAVAR MOUSE E TECLADO)
     // ==========================================
-    
+
     scene.onPointerDown = (evt) => {
         if (evt.button === 0) engine.enterPointerlock();
     };
@@ -224,11 +224,11 @@ const createScene = async function () {
     // LOOP DE FÍSICA E MOVIMENTO
     // ==========================================
     scene.onBeforeRenderObservable.add(() => {
-        const speed = 6; 
+        const speed = 6;
         const currentVelocity = boxAggregate.body.getLinearVelocity();
-        
-        let moveZ = 0; 
-        let moveX = 0; 
+
+        let moveZ = 0;
+        let moveX = 0;
 
         if (inputMap["w"] || inputMap["arrowup"]) moveZ = 1;
         if (inputMap["s"] || inputMap["arrowdown"]) moveZ = -1;
@@ -236,13 +236,13 @@ const createScene = async function () {
         if (inputMap["d"] || inputMap["arrowright"]) moveX = 1;
 
         // --- SISTEMA DE PULO COM RAYCAST ---
-        const ray = new BABYLON.Ray(box.position, new BABYLON.Vector3(0, -1, 0), 1.0); 
+        const ray = new BABYLON.Ray(box.position, new BABYLON.Vector3(0, -1, 0), 1.0);
         const pickInfo = scene.pickWithRay(ray, (mesh) => mesh.name === "myground");
         const isGrounded = pickInfo.hit;
 
         if (inputMap[" "] && isGrounded) {
             currentVelocity.y = 8;
-            inputMap[" "] = false; 
+            inputMap[" "] = false;
         }
 
         // --- SISTEMA DE MOVIMENTO E DIREÇÃO ---
@@ -266,11 +266,7 @@ const createScene = async function () {
 
             // --- ROTAÇÃO NATURAL POR ROLAMENTO (SEM ROTAÇÃO VISUAL) ---
             const movementLength = Math.sqrt(finalVelocityX ** 2 + finalVelocityZ ** 2);
-            if (movementLength > 0.1 && isGrounded) {
-                const rotationAxis = new BABYLON.Vector3(-finalVelocityZ, 0, finalVelocityX).normalize();
-                const angularVelocity = rotationAxis.scale(movementLength / boxSize);
-                boxAggregate.body.setAngularVelocity(angularVelocity);
-            }
+            
         } else if (isGrounded) {
             const angularVel = boxAggregate.body.getAngularVelocity();
             boxAggregate.body.setAngularVelocity(angularVel.scale(0.95));
