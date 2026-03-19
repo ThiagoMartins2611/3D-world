@@ -623,7 +623,7 @@ async function createScene() {
     BABYLON.SceneLoader.ImportMeshAsync(
         "",                 // Deixe vazio para importar todas as malhas do arquivo
         "./3D/",               // O caminho da pasta onde está o arquivo
-        "Esmilividu.glb",    // O nome do arquivo
+        "Esmilividu.glb",
         scene               // A sua cena atual
     ).then((resultado) => {
         console.log("Modelo carregado com sucesso!");
@@ -631,15 +631,45 @@ async function createScene() {
         // O 'resultado.meshes' é um array com todas as partes do seu modelo 3D
         const todasAsMalhas = resultado.meshes;
 
+        resultado.position = new BABYLON.Vector3(10, 5, 10); // Posicione o modelo no centro da cena
+
+        
+
         // Opcional: Se o modelo for gigante, você pode diminuí-lo
         // A malha [0] no GLB geralmente é o nó raiz (Root Node) que agrupa tudo
-        todasAsMalhas[0].scaling = new BABYLON.Vector3(100, 100, 100);
+        todasAsMalhas[0].scaling = new BABYLON.Vector3(50, 50, 50);
+        
+        // 2. Cria uma CAIXA DE COLISÃO exclusiva para a formiga
+        // Ajuste o 'size' para ficar do tamanho aproximado da sua formiga
+        const antCollider = BABYLON.MeshBuilder.CreateBox('antCollider', { width: 50, height: 50, depth: 50 }, scene);
+        
+        // 3. Escolhe onde a formiga vai "nascer" no mapa (Ex: X=10, Y=5, Z=10)
+        antCollider.position = new BABYLON.Vector3(10, 5, 10);
+        
+        // 4. Deixa a caixa de colisão invisível (para vermos só o 3D)
+        antCollider.isVisible = false; 
+
+        // 5. Parenteia o modelo 3D da formiga na caixa dela
+        todasAsMalhas[0].parent = antCollider;
+        
+        // Centraliza o desenho da formiga dentro da caixa dela (ajuste o Y se ficar flutuando)
+        todasAsMalhas[0].position = new BABYLON.Vector3(0, -1, 0); 
+
+        // 6. Adiciona a física na caixa da formiga!
+        const antAggregate = new BABYLON.PhysicsAggregate(
+            antCollider, 
+            BABYLON.PhysicsShapeType.BOX,
+            { mass: 5, restitution: 0.1, friction: 0.8 }, // mass: 5 (peso dela), restitution: o quanto ela "quica"
+            scene
+        );
+
+        // Opcional: Para evitar que a formiga tombe e role como um dado quando você bater nela,
+        // podemos travar a inércia dela para que ela só gire no eixo Y (como um pião):
+        antAggregate.body.setMassProperties({ inertia: new BABYLON.Vector3(0, 1, 0) });
     });
 
     return scene;
 }
-
-
 
 // ══════════════════════════════════════════════════════════════════════════════
 // MATH HELPERS
