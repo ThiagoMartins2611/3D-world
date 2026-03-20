@@ -2,33 +2,47 @@ import * as BABYLON from '@babylonjs/core';
 import HavokPhysics from '@babylonjs/havok';
 import '@babylonjs/loaders';
 
-
 // ══════════════════════════════════════════════════════════════════════════════
 // NETWORK CONFIG
 // ══════════════════════════════════════════════════════════════════════════════
-const INTERPOLATION_DELAY_MS = 100;
-const RECONCILE_EPS_XZ = 0.4;
-const MAX_SNAPSHOTS = 40;
-const PREDICTION_BUFFER_SIZE = 128;
+const INTERPOLATION_DELAY_MS  = 100;
+const RECONCILE_EPS_XZ        = 0.4;
+const MAX_SNAPSHOTS           = 40;
+const PREDICTION_BUFFER_SIZE  = 128;
 
-const IMPULSE_FORCE = 14;
-const IMPULSE_Y = 6;
-const IMPULSE_COOLDOWN_MS = 300;
+const IMPULSE_FORCE           = 14;
+const IMPULSE_Y               = 6;
+const IMPULSE_COOLDOWN_MS     = 300;
 
-// Max chat messages kept visible in the DOM
-const CHAT_MAX_VISIBLE = 40;
+// Ant knockback (player is launched, not the ant)
+const ANT_IMPULSE_FORCE       = 26;
+const ANT_IMPULSE_Y           = 10;
+
+// ── WEAPON ────────────────────────────────────────────────────────────────────
+const BAT_REST_Y              = -1.1;   // rad – bat pulled back to the right
+const BAT_END_Y               =  1.6;  // rad – follow-through to the left
+const SWING_DURATION          = 0.18;  // seconds for main swing arc
+const RECOVERY_DURATION       = 0.30;  // seconds to return to rest
+const BAT_HIT_T_FRACTION      = 0.45;  // point in swing [0-1] when hit-check fires
+const BAT_HIT_IMPULSE_XZ      = 30;    // horizontal force on target
+const BAT_HIT_IMPULSE_Y       = 16;    // vertical force on target
+const BAT_HIT_RANGE           = 3.5;   // metres (bat tip to target centre)
+const SWING_COOLDOWN_MS       = 520;   // min ms between swings
+
+// ── WORLD ─────────────────────────────────────────────────────────────────────
+const DEATH_Y                 = -60;   // fall below this Y → eliminated & respawn
+const CHAT_MAX_VISIBLE        = 40;
 
 // ══════════════════════════════════════════════════════════════════════════════
 // NICKNAME OVERLAY
-// Blocks the game until the player confirms a nickname.
 // ══════════════════════════════════════════════════════════════════════════════
 let localNickname = 'Player';
 
 function waitForNickname() {
     return new Promise((resolve) => {
         const overlay = document.getElementById('nickname-overlay');
-        const input = document.getElementById('nickname-input-field');
-        const btnOk = document.getElementById('nickname-confirm-btn');
+        const input   = document.getElementById('nickname-input-field');
+        const btnOk   = document.getElementById('nickname-confirm-btn');
 
         function confirm() {
             const raw = input.value.replace(/[<>&"']/g, '').trim();
@@ -38,60 +52,56 @@ function waitForNickname() {
         }
 
         btnOk.addEventListener('click', confirm);
-        input.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter') confirm();
-        });
-
-        // Focus the field immediately
+        input.addEventListener('keydown', (e) => { if (e.key === 'Enter') confirm(); });
         input.focus();
     });
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// CHAT UI HELPERS
+// CHAT UI
 // ══════════════════════════════════════════════════════════════════════════════
-const chatList = document.getElementById('chat-messages');
+const chatList  = document.getElementById('chat-messages');
 const chatInput = document.getElementById('chat-input');
-
-// clientId of self — set after handshake, used to style own messages
 let _selfId = null;
 
 function appendChatMessage({ nickname, message, clientId, isSystem = false }) {
     const li = document.createElement('li');
-
     if (isSystem) {
         li.classList.add('sys');
         li.textContent = message;
     } else {
         const nick = document.createElement('span');
-        nick.classList.add('chat-nick');
-        nick.classList.add(clientId === _selfId ? 'is-self' : 'is-other');
+        nick.classList.add('chat-nick', clientId === _selfId ? 'is-self' : 'is-other');
         nick.textContent = `${nickname}:`;
-        const text = document.createTextNode(` ${message}`);
         li.appendChild(nick);
-        li.appendChild(text);
+        li.appendChild(document.createTextNode(` ${message}`));
     }
-
     chatList.appendChild(li);
-
-    // Prune old messages
-    while (chatList.children.length > CHAT_MAX_VISIBLE) {
-        chatList.removeChild(chatList.firstChild);
-    }
-
-    // Auto-scroll to bottom
+    while (chatList.children.length > CHAT_MAX_VISIBLE) chatList.removeChild(chatList.firstChild);
     chatList.scrollTop = chatList.scrollHeight;
 }
+
+// ══════════════════════════════════════════════════════════════════════════════
+// HUD hint strip
+// ══════════════════════════════════════════════════════════════════════════════
+const hud = document.createElement('div');
+Object.assign(hud.style, {
+    position:'fixed', top:'10px', left:'50%', transform:'translateX(-50%)',
+    background:'rgba(0,0,0,0.50)', color:'#fff', fontSize:'12px',
+    padding:'4px 14px', borderRadius:'20px', fontFamily:'sans-serif',
+    pointerEvents:'none', zIndex:'1000', letterSpacing:'0.4px',
+});
+hud.innerHTML = '🖱 Clique para travar · WASD mover · <b>Espaço</b> pular · <b>Clique esq.</b> tacar · <b>T</b> chat';
+document.body.appendChild(hud);
 
 // ══════════════════════════════════════════════════════════════════════════════
 // CROSSHAIR
 // ══════════════════════════════════════════════════════════════════════════════
 const crosshair = document.createElement('div');
 Object.assign(crosshair.style, {
-    position: 'absolute', top: '50%', left: '50%',
-    width: '8px', height: '8px', backgroundColor: 'red',
-    transform: 'translate(-50%, -50%)', borderRadius: '50%',
-    pointerEvents: 'none', zIndex: '1000',
+    position:'absolute', top:'50%', left:'50%', width:'8px', height:'8px',
+    backgroundColor:'red', transform:'translate(-50%,-50%)', borderRadius:'50%',
+    pointerEvents:'none', zIndex:'1000',
 });
 document.body.appendChild(crosshair);
 
@@ -101,21 +111,60 @@ document.body.appendChild(crosshair);
 const canvas = document.getElementById('renderCanvas');
 const engine = new BABYLON.Engine(canvas);
 
-// ══════════════════════════════════════════════════════════════════════════════
-// BOOT — wait for nickname THEN build the scene
-// ══════════════════════════════════════════════════════════════════════════════
 waitForNickname().then(createScene).then(scene => {
     engine.runRenderLoop(() => scene.render());
 });
-
 window.addEventListener('resize', () => engine.resize());
+
+// ══════════════════════════════════════════════════════════════════════════════
+// BAT FACTORY
+// Creates a procedural baseball-bat mesh parented to `parentNode`.
+// Returns { root: TransformNode, mat: StandardMaterial }
+// ══════════════════════════════════════════════════════════════════════════════
+function createBat(scene, parentNode, idSuffix) {
+    idSuffix = idSuffix || '';
+
+    const mat = new BABYLON.StandardMaterial('batMat' + idSuffix, scene);
+    mat.diffuseColor  = new BABYLON.Color3(0.58, 0.30, 0.09);
+    mat.specularColor = new BABYLON.Color3(0.2, 0.15, 0.05);
+
+    const root = new BABYLON.TransformNode('batRoot' + idSuffix, scene);
+    root.parent   = parentNode;
+    // Held to the right side, slightly forward and elevated
+    root.position = new BABYLON.Vector3(0.55, 0.05, 0.15);
+    root.rotation = new BABYLON.Vector3(-0.35, BAT_REST_Y, -0.30);
+
+    // Handle: 0 → 0.65 along local Y
+    const handle = BABYLON.MeshBuilder.CreateCylinder('batH' + idSuffix, {
+        height: 0.65, diameterTop: 0.065, diameterBottom: 0.055, tessellation: 8,
+    }, scene);
+    handle.parent   = root;
+    handle.position = new BABYLON.Vector3(0, 0.325, 0);
+    handle.material = mat;
+
+    // Barrel: 0.65 → 1.15 along local Y
+    const barrel = BABYLON.MeshBuilder.CreateCylinder('batB' + idSuffix, {
+        height: 0.50, diameterTop: 0.095, diameterBottom: 0.19, tessellation: 8,
+    }, scene);
+    barrel.parent   = root;
+    barrel.position = new BABYLON.Vector3(0, 0.90, 0);
+    barrel.material = mat;
+
+    // End knob
+    const knob = BABYLON.MeshBuilder.CreateSphere('batK' + idSuffix, { diameter: 0.11, segments: 6 }, scene);
+    knob.parent   = root;
+    knob.position = new BABYLON.Vector3(0, -0.01, 0);
+    knob.material = mat;
+
+    return { root, mat };
+}
 
 // ══════════════════════════════════════════════════════════════════════════════
 // SCENE
 // ══════════════════════════════════════════════════════════════════════════════
 async function createScene() {
     const scene = new BABYLON.Scene(engine);
-    scene.clearColor = BABYLON.Color4.FromHexString("#87CEEBff");
+    scene.clearColor = BABYLON.Color4.FromHexString('#87CEEBff');
 
     // ── Physics ───────────────────────────────────────────────────────────────
     const havokInstance = await HavokPhysics();
@@ -126,9 +175,12 @@ async function createScene() {
     const light = new BABYLON.HemisphericLight('light', new BABYLON.Vector3(0, 1, 0), scene);
     light.intensity = 0.8;
 
-    // ── Local player ──────────────────────────────────────────────────────────
-    const box = new BABYLON.MeshBuilder.CreateBox('mybox', { size: 1 });
-    box.position.y = 5;
+    // ── Local player — random spawn ───────────────────────────────────────────
+    const spawnX = (Math.random() - 0.5) * 80;
+    const spawnZ = (Math.random() - 0.5) * 80;
+
+    const box = BABYLON.MeshBuilder.CreateBox('mybox', { size: 1 });
+    box.position.set(spawnX, 15, spawnZ);
     box.rotationQuaternion = new BABYLON.Quaternion();
 
     const boxMat = new BABYLON.StandardMaterial('boxMat', scene);
@@ -153,89 +205,137 @@ async function createScene() {
     camera.inputs.attached.pointers.buttons = [0];
 
     // ── Terrain ───────────────────────────────────────────────────────────────
-    // 1. Função Matemática para gerar o relevo (Substitui a imagem profundidade.jpg)
-    // Em um jogo profissional, você substituiria essa função pela biblioteca "simplex-noise"
     function getProceduralHeight(x, z) {
-        // Escala altera a "largura" das montanhas. Amplitude altera a "altura".
-        const scale1 = 0.02, amp1 = 8;
-        const scale2 = 0.05, amp2 = 3;
-
-        // Combina ondas para criar morros e vales suaves
-        let y = Math.sin(x * scale1) * Math.cos(z * scale1) * amp1;
-        // Adiciona detalhes menores por cima das montanhas maiores
-        y += Math.sin(x * scale2) * Math.cos(z * scale2) * amp2;
-
-        return y;
+        return Math.sin(x * 0.02) * Math.cos(z * 0.02) * 8
+             + Math.sin(x * 0.05) * Math.cos(z * 0.05) * 3;
     }
 
-    // 2. Criar o chão plano, mas marcando como UPDATABLE (Atualizável)
     const ground = BABYLON.MeshBuilder.CreateGround('myground', {
-        width: 1000,
-        height: 1000,
-        subdivisions: 200,
-        updatable: true // IMPORTANTE: Permite que possamos mover os vértices via código
+        width: 1000, height: 1000, subdivisions: 200, updatable: true,
     }, scene);
 
-    // 3. Pegar os vértices do chão (X, Y, Z) para deformá-los
     const positions = ground.getVerticesData(BABYLON.VertexBuffer.PositionKind);
-    const indices = ground.getIndices();
-
-    // O array de posições é linear: [x1, y1, z1, x2, y2, z2...]
-    // Vamos pular de 3 em 3 para alterar apenas o Y (Altura) de cada ponto
+    const indices   = ground.getIndices();
     for (let i = 0; i < positions.length; i += 3) {
-        const x = positions[i];
-        const z = positions[i + 2];
-
-        // Aplica a nossa função procedural na altura (Y) baseada no X e Z
-        positions[i + 1] = getProceduralHeight(x, z);
+        positions[i + 1] = getProceduralHeight(positions[i], positions[i + 2]);
     }
-
-    // 4. Salvar as novas alturas de volta no terreno
     ground.updateVerticesData(BABYLON.VertexBuffer.PositionKind, positions);
-
-    // 5. Recalcular as normais (Essencial para a iluminação e sombras fazerem sentido nas subidas/descidas)
     const normals = [];
     BABYLON.VertexData.ComputeNormals(positions, indices, normals);
     ground.updateVerticesData(BABYLON.VertexBuffer.NormalKind, normals);
 
-    // 6. Aplicar os Materiais (Seu código original)
-    const groundMat = new BABYLON.StandardMaterial('groundMat', scene);
+    const groundMat     = new BABYLON.StandardMaterial('groundMat', scene);
     const groundTexture = new BABYLON.Texture('/textura-do-chao.png', scene);
     groundTexture.uScale = 50;
     groundTexture.vScale = 50;
     groundMat.diffuseTexture = groundTexture;
     ground.material = groundMat;
 
-    // 7. Aplicar a Física no novo formato do terreno
     new BABYLON.PhysicsAggregate(
-        ground,
-        BABYLON.PhysicsShapeType.MESH,
-        { mass: 0, restitution: 0.1, friction: 0.8 },
-        scene
+        ground, BABYLON.PhysicsShapeType.MESH,
+        { mass: 0, restitution: 0.1, friction: 0.8 }, scene
     );
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // LOCAL PLAYER BAT
+    // batHolder is manually positioned each frame to follow the box and
+    // face the camera direction, so the swing always goes "forward".
+    // ══════════════════════════════════════════════════════════════════════════
+    const batHolder = new BABYLON.TransformNode('batHolder', scene);
+    const { root: batRoot, mat: batMat } = createBat(scene, batHolder, '_local');
+
+    // Swing FSM
+    let swingPhase           = 'idle';   // 'idle' | 'swing' | 'recovery'
+    let swingT               = 0;
+    let hitCheckedThisSwing  = false;
+    let lastSwingTime        = 0;
+    let lastHitBy            = null;     // nickname of whoever last hit us
+
+    function startSwing() {
+        const now = performance.now();
+        if (swingPhase !== 'idle' || now - lastSwingTime < SWING_COOLDOWN_MS) return;
+        lastSwingTime       = now;
+        swingPhase          = 'swing';
+        swingT              = 0;
+        hitCheckedThisSwing = false;
+    }
+
+    function checkBatHit() {
+        if (!clientId || ws.readyState !== WebSocket.OPEN) return;
+
+        batRoot.computeWorldMatrix(true);
+        // Bat tip is at local (0, 1.15, 0) inside batRoot
+        const batTip = BABYLON.Vector3.TransformCoordinates(
+            new BABYLON.Vector3(0, 1.15, 0),
+            batRoot.getWorldMatrix()
+        );
+
+        for (const [rid, p] of otherPlayers) {
+            if (BABYLON.Vector3.Distance(batTip, p.mesh.position) <= BAT_HIT_RANGE) {
+                const dir = p.mesh.position.subtract(box.position);
+                dir.y = 0;
+                if (dir.length() < 0.001) dir.x = 1;
+                dir.normalize().scaleInPlace(BAT_HIT_IMPULSE_XZ);
+                dir.y = BAT_HIT_IMPULSE_Y;
+
+                ws.send(JSON.stringify({
+                    type: 'bat_hit',
+                    targetId: rid,
+                    dir: { x: dir.x, y: dir.y, z: dir.z },
+                }));
+
+                // Flash bat red on hit
+                batMat.emissiveColor = new BABYLON.Color3(1, 0.1, 0);
+                setTimeout(() => { batMat.emissiveColor = BABYLON.Color3.Black(); }, 180);
+                break;
+            }
+        }
+    }
+
+    function respawnPlayer() {
+        const nx = (Math.random() - 0.5) * 80;
+        const nz = (Math.random() - 0.5) * 80;
+        box.position.set(nx, 15, nz);
+        boxAggregate.body.setLinearVelocity(BABYLON.Vector3.Zero());
+        boxAggregate.body.setAngularVelocity(BABYLON.Vector3.Zero());
+        isAirborne = false;
+        if (isAirborneTimer) { clearTimeout(isAirborneTimer); isAirborneTimer = null; }
+
+        if (clientId && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'eliminated', killerNickname: lastHitBy }));
+        }
+        appendChatMessage({ isSystem: true, message: '💀 Você foi eliminado! Renascendo...' });
+        lastHitBy = null;
+    }
 
     // ══════════════════════════════════════════════════════════════════════════
     // NETWORK STATE
     // ══════════════════════════════════════════════════════════════════════════
-    let clientId = null;
+    let clientId         = null;
     let serverTimeOffset = 0;
 
-    // Map<id, { mesh, aggregate, label, snapshots[], nickname }>
-    const otherPlayers = new Map();
+    const otherPlayers     = new Map();
+    const pendingNicknames = new Map();  // nicknames arriving before world_state
 
-    let inputSeq = 0;
-    const predBuf = [];
+    let inputSeq   = 0;
+    const predBuf  = [];
 
-    let isAirborne = false;
+    let isAirborne      = false;
     let lastImpulseTime = 0;
+    let isAirborneTimer = null;
+
+    let antPhysicsBody = null;
+    let antColliderRef = null;
 
     // ══════════════════════════════════════════════════════════════════════════
-    // REMOTE PLAYER FACTORY
+    // REMOTE PLAYER FACTORY (includes bat)
     // ══════════════════════════════════════════════════════════════════════════
     function spawnRemotePlayer(rid, nickname) {
+        const resolvedNick = pendingNicknames.get(rid) || nickname || ('Player_' + rid.substring(0, 6));
+        pendingNicknames.delete(rid);
 
-        const mesh = new BABYLON.MeshBuilder.CreateBox(`player_${rid}`, { size: 1 }, scene);
-        const mat = new BABYLON.StandardMaterial(`mat_${rid}`, scene);
+        const mesh = BABYLON.MeshBuilder.CreateBox('player_' + rid, { size: 1 }, scene);
+        const mat  = new BABYLON.StandardMaterial('mat_' + rid, scene);
         mat.diffuseColor = new BABYLON.Color3(Math.random(), Math.random(), Math.random());
         mesh.material = mat;
         mesh.rotationQuaternion = new BABYLON.Quaternion();
@@ -248,65 +348,58 @@ async function createScene() {
         agg.body.setCollisionCallbackEnabled(true);
         agg.body.disablePreStep = false;
 
+        // Bat parented directly to the remote player mesh
+        const { root: remoteBatRoot } = createBat(scene, mesh, '_' + rid.substring(0, 6));
+
         const label = document.createElement('div');
-        label.textContent = nickname || `Player ${rid.substring(0, 8)}`;
+        label.textContent = resolvedNick;
         Object.assign(label.style, {
-            position: 'absolute', color: 'white', fontSize: '12px',
-            backgroundColor: 'rgba(0,0,0,0.55)', padding: '2px 8px',
-            borderRadius: '4px', pointerEvents: 'none', zIndex: '999',
-            fontFamily: 'sans-serif', fontWeight: 'bold',
-            textShadow: '0 1px 3px #000',
-            transform: 'translateX(-50%)',  // centre the label over the player
+            position:'absolute', color:'white', fontSize:'12px',
+            backgroundColor:'rgba(0,0,0,0.55)', padding:'2px 8px',
+            borderRadius:'4px', pointerEvents:'none', zIndex:'999',
+            fontFamily:'sans-serif', fontWeight:'bold',
+            textShadow:'0 1px 3px #000', transform:'translateX(-50%)',
         });
         document.body.appendChild(label);
 
-        return { mesh, aggregate: agg, label, snapshots: [], nickname: nickname || rid.substring(0, 8) };
+        return {
+            mesh, aggregate: agg, label, snapshots: [],
+            nickname: resolvedNick,
+            batRoot: remoteBatRoot,
+            swingPhase: 'idle', swingT: 0,
+        };
     }
 
     // ══════════════════════════════════════════════════════════════════════════
     // WEBSOCKET
     // ══════════════════════════════════════════════════════════════════════════
     const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const ws = new WebSocket(`${wsProtocol}//${location.hostname}:8080`);
+    const ws = new WebSocket(wsProtocol + '//' + location.hostname + ':8080');
 
-    ws.onopen = () => {
-        console.log('✓ WebSocket connected');
-        // Nickname is sent right after the server responds with 'init',
-        // but we queue it here too in case init already arrived.
-    };
+    ws.onopen  = () => console.log('✓ WebSocket conectado');
     ws.onerror = (e) => console.error('WebSocket error', e);
-    ws.onclose = () => console.warn('⚠ WebSocket closed');
+    ws.onclose = () => console.warn('⚠ WebSocket fechado');
 
     ws.onmessage = (event) => {
         const msg = JSON.parse(event.data);
 
         // ── Handshake ─────────────────────────────────────────────────────────
         if (msg.type === 'init') {
-            clientId = msg.clientId;
-            _selfId = clientId;  // let chat UI know who "self" is
+            clientId         = msg.clientId;
+            _selfId          = clientId;
             serverTimeOffset = msg.serverTime - Date.now();
-            console.log(`ID: ${clientId} | clock offset: ${serverTimeOffset}ms`);
-
-            // Send our nickname immediately after receiving our ID
             ws.send(JSON.stringify({ type: 'set_nickname', nickname: localNickname }));
 
-            // ── World state ───────────────────────────────────────────────────────
+        // ── World state ───────────────────────────────────────────────────────
         } else if (msg.type === 'world_state') {
-
             for (const [rid, srv] of Object.entries(msg.states)) {
-
-                // ── Own player — XZ Reconciliation ────────────────────────────
                 if (rid === clientId) {
+                    // XZ reconciliation
                     const idx = predBuf.findIndex(e => e.seq === srv.s);
                     if (idx === -1) continue;
-
-                    const pred = predBuf[idx];
-                    const dxErr = pred.pos.x - srv.p.x;
-                    const dzErr = pred.pos.z - srv.p.z;
-                    const xzErr = Math.sqrt(dxErr * dxErr + dzErr * dzErr);
-
+                    const pred   = predBuf[idx];
+                    const xzErr  = Math.hypot(pred.pos.x - srv.p.x, pred.pos.z - srv.p.z);
                     if (xzErr > RECONCILE_EPS_XZ) {
-                        console.warn(`[Reconcile] seq=${srv.s} ΔXZ=${xzErr.toFixed(3)}m`);
                         box.position.x = srv.p.x;
                         box.position.z = srv.p.z;
                         const curVel = boxAggregate.body.getLinearVelocity();
@@ -316,119 +409,127 @@ async function createScene() {
                         let rx = srv.p.x, rz = srv.p.z;
                         for (let i = idx + 1; i < predBuf.length; i++) {
                             const e = predBuf[i];
-                            rx += e.vel.x * e.dt;
-                            rz += e.vel.z * e.dt;
-                            e.pos.x = rx;
-                            e.pos.z = rz;
+                            rx += e.vel.x * e.dt; rz += e.vel.z * e.dt;
+                            e.pos.x = rx; e.pos.z = rz;
                         }
                     }
-
                     predBuf.splice(0, idx + 1);
-
-                    // ── Remote player — snapshot ──────────────────────────────────
                 } else {
-                    // Nickname may arrive in world_state (srv.n)
                     const incomingNick = srv.n || null;
-
                     if (!otherPlayers.has(rid)) {
                         const p = spawnRemotePlayer(rid, incomingNick);
                         otherPlayers.set(rid, p);
-                        appendChatMessage({
-                            isSystem: true,
-                            message: `⚡ ${p.nickname} entrou no jogo`,
-                        });
-                        console.log('Player joined:', rid, `(${p.nickname})`);
-                    } else if (incomingNick) {
-                        // Update label if nickname changed
-                        const p = otherPlayers.get(rid);
-                        if (p.nickname !== incomingNick) {
-                            p.nickname = incomingNick;
-                            p.label.textContent = incomingNick;
+                        appendChatMessage({ isSystem: true, message: '⚡ ' + p.nickname + ' entrou no jogo' });
+                    } else {
+                        const p       = otherPlayers.get(rid);
+                        const pending = pendingNicknames.get(rid);
+                        if (pending) {
+                            p.nickname = pending; p.label.textContent = pending;
+                            pendingNicknames.delete(rid);
+                        } else if (incomingNick && p.nickname !== incomingNick) {
+                            p.nickname = incomingNick; p.label.textContent = incomingNick;
                         }
                     }
-
                     const player = otherPlayers.get(rid);
-                    player.snapshots.push({
-                        t: msg.t,
-                        p: { ...srv.p },
-                        v: { ...srv.v },
-                        r: { ...srv.r },
-                    });
+                    player.snapshots.push({ t: msg.t, p: { ...srv.p }, v: { ...srv.v }, r: { ...srv.r } });
                     if (player.snapshots.length > MAX_SNAPSHOTS) player.snapshots.shift();
                 }
             }
 
-            // ── Nickname update broadcast ─────────────────────────────────────────
+        // ── Nickname update ───────────────────────────────────────────────────
         } else if (msg.type === 'player_info') {
-            if (msg.clientId === clientId) return; // ignore own echo
+            if (msg.clientId === clientId) return;
             const p = otherPlayers.get(msg.clientId);
             if (p) {
-                p.nickname = msg.nickname;
-                p.label.textContent = msg.nickname;
+                p.nickname = msg.nickname; p.label.textContent = msg.nickname;
+            } else {
+                pendingNicknames.set(msg.clientId, msg.nickname);
             }
 
-            // ── Chat ──────────────────────────────────────────────────────────────
+        // ── Chat ──────────────────────────────────────────────────────────────
         } else if (msg.type === 'chat') {
-            appendChatMessage({
-                clientId: msg.clientId,
-                nickname: msg.nickname,
-                message: msg.message,
-            });
+            appendChatMessage({ clientId: msg.clientId, nickname: msg.nickname, message: msg.message });
 
-            // ── Disconnect ────────────────────────────────────────────────────────
+        // ── We were hit by a bat! Apply knockback to ourselves ────────────────
+        } else if (msg.type === 'bat_hit') {
+            const impulse = new BABYLON.Vector3(msg.dir.x, msg.dir.y, msg.dir.z);
+            boxAggregate.body.applyImpulse(impulse, box.getAbsolutePosition());
+            isAirborne = true;
+            lastHitBy  = msg.fromNickname || null;
+            if (isAirborneTimer) clearTimeout(isAirborneTimer);
+            isAirborneTimer = setTimeout(() => { isAirborne = false; isAirborneTimer = null; }, 3000);
+
+        // ── A remote player swung their bat — play their swing animation ───────
+        } else if (msg.type === 'swing_event') {
+            const p = otherPlayers.get(msg.fromId);
+            if (p && p.swingPhase === 'idle') {
+                p.swingPhase = 'swing';
+                p.swingT     = 0;
+            }
+
+        // ── Kill feed (someone was eliminated) ────────────────────────────────
+        } else if (msg.type === 'kill_feed') {
+            const text = msg.killerNickname
+                ? ('💀 ' + msg.killedNickname + ' foi eliminado por ' + msg.killerNickname)
+                : ('💀 ' + msg.killedNickname + ' caiu do mapa');
+            appendChatMessage({ isSystem: true, message: text });
+
+        // ── Disconnect ────────────────────────────────────────────────────────
         } else if (msg.type === 'disconnect') {
             const p = otherPlayers.get(msg.clientId);
             if (p) {
-                appendChatMessage({
-                    isSystem: true,
-                    message: `🔌 ${p.nickname} saiu do jogo`,
-                });
+                appendChatMessage({ isSystem: true, message: '🔌 ' + p.nickname + ' saiu do jogo' });
                 p.aggregate.dispose();
                 p.mesh.dispose();
                 p.label.remove();
                 otherPlayers.delete(msg.clientId);
+                pendingNicknames.delete(msg.clientId);
             }
         }
     };
 
     // ══════════════════════════════════════════════════════════════════════════
-    // COLLISION IMPULSE
+    // COLLISION — body-slam and ant contact (push LOCAL player away)
     // ══════════════════════════════════════════════════════════════════════════
     boxAggregate.body.getCollisionObservable().add((evt) => {
         if (evt.type !== BABYLON.PhysicsEventType.COLLISION_STARTED) return;
-
         const now = performance.now();
         if (now - lastImpulseTime < IMPULSE_COOLDOWN_MS) return;
 
-        let hitPos = null;
+        let hitPos   = null;
+        let isAntHit = false;
+
         for (const [, p] of otherPlayers) {
             if (p.aggregate.body === evt.collidedAgainst) { hitPos = p.mesh.position; break; }
+        }
+        if (!hitPos && antPhysicsBody && evt.collidedAgainst === antPhysicsBody) {
+            hitPos   = antColliderRef ? antColliderRef.position : new BABYLON.Vector3(10, 5, 10);
+            isAntHit = true;
         }
         if (!hitPos) return;
 
         const dir = box.position.subtract(hitPos);
         dir.y = 0;
         if (dir.length() < 0.001) dir.x = 1;
-        else dir.normalize();
-        dir.scaleInPlace(IMPULSE_FORCE);
-        dir.y = IMPULSE_Y;
+        dir.normalize().scaleInPlace(isAntHit ? ANT_IMPULSE_FORCE : IMPULSE_FORCE);
+        dir.y = isAntHit ? ANT_IMPULSE_Y : IMPULSE_Y;
 
         boxAggregate.body.applyImpulse(dir, box.getAbsolutePosition());
         lastImpulseTime = now;
-        isAirborne = true;
+        isAirborne      = true;
+        if (isAirborneTimer) clearTimeout(isAirborneTimer);
+        isAirborneTimer = setTimeout(() => { isAirborne = false; isAirborneTimer = null; }, 2000);
 
-        // Immediate state push so the server knows about the velocity spike now
         if (clientId && ws.readyState === WebSocket.OPEN) {
             const seq = ++inputSeq;
             ws.send(JSON.stringify({
                 type: 'state', seq,
-                t: Date.now() + serverTimeOffset,
+                t:   Date.now() + serverTimeOffset,
                 pos: { x: box.position.x, y: box.position.y, z: box.position.z },
                 vel: { x: dir.x, y: dir.y, z: dir.z },
                 rot: quatToObj(box.rotationQuaternion),
             }));
-            predBuf.push({
-                seq, dt: 0,
+            predBuf.push({ seq, dt: 0,
                 pos: { x: box.position.x, y: box.position.y, z: box.position.z },
                 vel: { x: dir.x, y: dir.y, z: dir.z },
             });
@@ -436,68 +537,99 @@ async function createScene() {
     });
 
     // ══════════════════════════════════════════════════════════════════════════
-    // INPUT — keyboard + CHAT
+    // INPUT
     // ══════════════════════════════════════════════════════════════════════════
+    // First click → lock pointer; clicks while locked → swing bat
     scene.onPointerDown = (evt) => {
-        // Only lock pointer if not clicking the chat input
         if (evt.button === 0 && document.activeElement !== chatInput) {
-            engine.enterPointerlock();
+            if (!document.pointerLockElement) {
+                engine.enterPointerlock();
+            } else {
+                startSwing();
+            }
         }
     };
 
     const keys = {};
 
-    // Keyboard: WASD / arrows — but NOT when the chat input is focused
     scene.onKeyboardObservable.add((kbInfo) => {
-        // If user is typing in chat, don't forward movement keys to the game
         if (document.activeElement === chatInput) return;
-
         const k = kbInfo.event.key.toLowerCase();
         if (kbInfo.type === BABYLON.KeyboardEventTypes.KEYDOWN) keys[k] = true;
-        if (kbInfo.type === BABYLON.KeyboardEventTypes.KEYUP) keys[k] = false;
+        if (kbInfo.type === BABYLON.KeyboardEventTypes.KEYUP)   keys[k] = false;
     });
 
-    // Press T to focus chat (and Escape to blur)
+    // T = open chat (must release pointer lock first)
     window.addEventListener('keydown', (e) => {
-        if (e.key === 't' || e.key === 'T') {
-            if (document.activeElement !== chatInput) {
-                e.preventDefault();
-                engine.exitPointerlock();
+        if ((e.key === 't' || e.key === 'T') && document.activeElement !== chatInput) {
+            e.preventDefault();
+            if (document.pointerLockElement) {
+                document.exitPointerLock();
+                document.addEventListener('pointerlockchange', function onUnlock() {
+                    document.removeEventListener('pointerlockchange', onUnlock);
+                    if (!document.pointerLockElement) chatInput.focus();
+                });
+            } else {
                 chatInput.focus();
             }
         }
-        if (e.key === 'Escape') {
-            chatInput.blur();
-        }
+        if (e.key === 'Escape' && document.activeElement === chatInput) chatInput.blur();
     });
 
-    // Send chat on Enter
     chatInput.addEventListener('keydown', (e) => {
+        e.stopPropagation(); // stop Babylon intercepting keys while typing
         if (e.key !== 'Enter') return;
         const text = chatInput.value.trim();
         chatInput.value = '';
-        if (!text || !clientId || ws.readyState !== WebSocket.OPEN) return;
+        if (!text) return;
+        if (!clientId || ws.readyState !== WebSocket.OPEN) {
+            appendChatMessage({ isSystem: true, message: '⚠ Não conectado.' }); return;
+        }
         ws.send(JSON.stringify({ type: 'chat', message: text }));
-        // Server echoes the message back to us — no need to add locally
     });
 
-    // Blur chat when clicking the canvas
-    canvas.addEventListener('mousedown', () => {
-        chatInput.blur();
-    });
+    canvas.addEventListener('mousedown', () => chatInput.blur());
 
     // ══════════════════════════════════════════════════════════════════════════
     // RENDER LOOP
     // ══════════════════════════════════════════════════════════════════════════
     scene.onBeforeRenderObservable.add(() => {
-        const dt = Math.min(engine.getDeltaTime() / 1000, 0.05);
+        const dt  = Math.min(engine.getDeltaTime() / 1000, 0.05);
         const vel = boxAggregate.body.getLinearVelocity();
 
+        // ── Ground check ──────────────────────────────────────────────────────
         const ray = new BABYLON.Ray(box.position, new BABYLON.Vector3(0, -1, 0), 1.0);
         const hit = scene.pickWithRay(ray, (m) => m.name === 'myground');
         const isGrounded = hit.hit;
-        if (isGrounded && Math.abs(vel.y) < 1.5) isAirborne = false;
+        if (isGrounded && Math.abs(vel.y) < 1.5) {
+            isAirborne = false;
+            if (isAirborneTimer) { clearTimeout(isAirborneTimer); isAirborneTimer = null; }
+        }
 
+        // ── Death zone check ──────────────────────────────────────────────────
+        if (box.position.y < DEATH_Y) { respawnPlayer(); return; }
+
+        // ── batHolder: tracks box position and faces camera direction ─────────
+        batHolder.position.copyFrom(box.position);
+        const cf = camera.getDirection(BABYLON.Vector3.Forward());
+        batHolder.rotation.y = Math.atan2(cf.x, cf.z);
+
+        // ── Local bat swing animation ─────────────────────────────────────────
+        if (swingPhase === 'swing') {
+            swingT = Math.min(swingT + dt / SWING_DURATION, 1);
+            batRoot.rotation.y = BAT_REST_Y + (BAT_END_Y - BAT_REST_Y) * swingT;
+            if (!hitCheckedThisSwing && swingT >= BAT_HIT_T_FRACTION) {
+                hitCheckedThisSwing = true;
+                checkBatHit();
+            }
+            if (swingT >= 1) { swingPhase = 'recovery'; swingT = 0; }
+        } else if (swingPhase === 'recovery') {
+            swingT = Math.min(swingT + dt / RECOVERY_DURATION, 1);
+            batRoot.rotation.y = BAT_END_Y + (BAT_REST_Y - BAT_END_Y) * swingT;
+            if (swingT >= 1) { swingPhase = 'idle'; swingT = 0; }
+        }
+
+        // ── Movement ──────────────────────────────────────────────────────────
         const input = {
             w: !!(keys['w'] || keys['arrowup']),
             s: !!(keys['s'] || keys['arrowdown']),
@@ -505,10 +637,7 @@ async function createScene() {
             d: !!(keys['d'] || keys['arrowright']),
         };
 
-        if (keys[' '] && isGrounded) {
-            keys[' '] = false;
-            vel.y = 8;
-        }
+        if (keys[' '] && isGrounded) { keys[' '] = false; vel.y = 8; }
 
         const cfBab = camera.getDirection(BABYLON.Vector3.Forward());
         const crBab = camera.getDirection(BABYLON.Vector3.Right());
@@ -522,9 +651,9 @@ async function createScene() {
         if (input.a) { dirX -= crBab.x; dirZ -= crBab.z; }
 
         const dLen = Math.sqrt(dirX * dirX + dirZ * dirZ);
-        const spd = 25;
-        const vx = dLen > 0 ? (dirX / dLen) * spd : 0;
-        const vz = dLen > 0 ? (dirZ / dLen) * spd : 0;
+        const spd  = 25;
+        const vx   = dLen > 0 ? (dirX / dLen) * spd : 0;
+        const vz   = dLen > 0 ? (dirZ / dLen) * spd : 0;
 
         if (dLen === 0 && isGrounded) {
             const av = boxAggregate.body.getAngularVelocity();
@@ -550,14 +679,14 @@ async function createScene() {
         if (clientId && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({
                 type: 'state', seq,
-                t: Date.now() + serverTimeOffset,
+                t:   Date.now() + serverTimeOffset,
                 pos: { x: box.position.x, y: box.position.y, z: box.position.z },
                 vel: { x: finalVel.x, y: finalVel.y, z: finalVel.z },
                 rot: quatToObj(box.rotationQuaternion),
             }));
         }
 
-        // ── Entity interpolation ──────────────────────────────────────────────
+        // ── Entity interpolation + remote bat ─────────────────────────────────
         const renderTime = Date.now() + serverTimeOffset - INTERPOLATION_DELAY_MS;
 
         for (const [, player] of otherPlayers) {
@@ -570,24 +699,17 @@ async function createScene() {
             }
 
             let ip, ir;
-
             if (lo === -1) {
-                ip = { ...snaps[0].p };
-                ir = { ...snaps[0].r };
+                ip = { ...snaps[0].p }; ir = { ...snaps[0].r };
             } else if (lo === snaps.length - 1) {
-                const s = snaps[lo];
+                const s    = snaps[lo];
                 const exDt = Math.min((renderTime - s.t) / 1000, 0.15);
-                ip = {
-                    x: s.p.x + s.v.x * exDt,
-                    y: s.p.y + s.v.y * exDt,
-                    z: s.p.z + s.v.z * exDt,
-                };
+                ip = { x: s.p.x + s.v.x * exDt, y: s.p.y + s.v.y * exDt, z: s.p.z + s.v.z * exDt };
                 ir = { ...s.r };
             } else {
-                const s0 = snaps[lo];
-                const s1 = snaps[lo + 1];
+                const s0 = snaps[lo], s1 = snaps[lo + 1];
                 const span = s1.t - s0.t;
-                const t = span > 0 ? Math.max(0, Math.min(1, (renderTime - s0.t) / span)) : 0;
+                const t    = span > 0 ? Math.max(0, Math.min(1, (renderTime - s0.t) / span)) : 0;
                 ip = {
                     x: s0.p.x + (s1.p.x - s0.p.x) * t,
                     y: s0.p.y + (s1.p.y - s0.p.y) * t,
@@ -601,7 +723,18 @@ async function createScene() {
                 new BABYLON.Quaternion(ir.x, ir.y, ir.z, ir.w)
             );
 
-            // ── Label position ────────────────────────────────────────────────
+            // Remote bat swing animation
+            if (player.swingPhase === 'swing') {
+                player.swingT = Math.min(player.swingT + dt / SWING_DURATION, 1);
+                if (player.batRoot) player.batRoot.rotation.y = BAT_REST_Y + (BAT_END_Y - BAT_REST_Y) * player.swingT;
+                if (player.swingT >= 1) { player.swingPhase = 'recovery'; player.swingT = 0; }
+            } else if (player.swingPhase === 'recovery') {
+                player.swingT = Math.min(player.swingT + dt / RECOVERY_DURATION, 1);
+                if (player.batRoot) player.batRoot.rotation.y = BAT_END_Y + (BAT_REST_Y - BAT_END_Y) * player.swingT;
+                if (player.swingT >= 1) { player.swingPhase = 'idle'; player.swingT = 0; }
+            }
+
+            // Nickname label projection
             const screenPos = BABYLON.Vector3.Project(
                 new BABYLON.Vector3(ip.x, ip.y + 1.2, ip.z),
                 BABYLON.Matrix.Identity(),
@@ -610,63 +743,43 @@ async function createScene() {
             );
             if (screenPos.z > 0 && screenPos.z < 1) {
                 Object.assign(player.label.style, {
-                    display: 'block',
-                    left: `${screenPos.x}px`,
-                    top: `${screenPos.y}px`,
+                    display:'block', left: screenPos.x + 'px', top: screenPos.y + 'px',
                 });
             } else {
                 player.label.style.display = 'none';
             }
         }
     });
-    // O ImportMeshAsync carrega o modelo e retorna uma Promessa (Promise) quando terminar
-    BABYLON.SceneLoader.ImportMeshAsync(
-        "",                 // Deixe vazio para importar todas as malhas do arquivo
-        "./3D/",               // O caminho da pasta onde está o arquivo
-        "Esmilividu.glb",
-        scene               // A sua cena atual
-    ).then((resultado) => {
-        console.log("Modelo carregado com sucesso!");
 
-        // O 'resultado.meshes' é um array com todas as partes do seu modelo 3D
-        const todasAsMalhas = resultado.meshes;
+    // ══════════════════════════════════════════════════════════════════════════
+    // FORMIGA — static mesh, launches players on contact
+    // ══════════════════════════════════════════════════════════════════════════
+    BABYLON.SceneLoader.ImportMeshAsync('', './3D/', 'Esmilividu.glb', scene)
+        .then((resultado) => {
+            const todasAsMalhas = resultado.meshes;
 
-        resultado.position = new BABYLON.Vector3(10, 5, 10); // Posicione o modelo no centro da cena
+            const antCollider = BABYLON.MeshBuilder.CreateBox(
+                'antCollider', { width: 50, height: 50, depth: 50 }, scene
+            );
+            antCollider.position  = new BABYLON.Vector3(10, 5, 10);
+            antCollider.isVisible = false;
 
-        
+            todasAsMalhas[0].scaling  = new BABYLON.Vector3(50, 50, 50);
+            todasAsMalhas[0].parent   = antCollider;
+            todasAsMalhas[0].position = new BABYLON.Vector3(0, -1, 0);
 
-        // Opcional: Se o modelo for gigante, você pode diminuí-lo
-        // A malha [0] no GLB geralmente é o nó raiz (Root Node) que agrupa tudo
-        todasAsMalhas[0].scaling = new BABYLON.Vector3(50, 50, 50);
-        
-        // 2. Cria uma CAIXA DE COLISÃO exclusiva para a formiga
-        // Ajuste o 'size' para ficar do tamanho aproximado da sua formiga
-        const antCollider = BABYLON.MeshBuilder.CreateBox('antCollider', { width: 50, height: 50, depth: 50 }, scene);
-        
-        // 3. Escolhe onde a formiga vai "nascer" no mapa (Ex: X=10, Y=5, Z=10)
-        antCollider.position = new BABYLON.Vector3(10, 5, 10);
-        
-        // 4. Deixa a caixa de colisão invisível (para vermos só o 3D)
-        antCollider.isVisible = false; 
+            const antAggregate = new BABYLON.PhysicsAggregate(
+                antCollider, BABYLON.PhysicsShapeType.BOX,
+                { mass: 0, restitution: 0.2, friction: 0.8 }, scene
+            );
+            antAggregate.body.setMotionType(BABYLON.PhysicsMotionType.STATIC);
+            antAggregate.body.setCollisionCallbackEnabled(true);
 
-        // 5. Parenteia o modelo 3D da formiga na caixa dela
-        todasAsMalhas[0].parent = antCollider;
-        
-        // Centraliza o desenho da formiga dentro da caixa dela (ajuste o Y se ficar flutuando)
-        todasAsMalhas[0].position = new BABYLON.Vector3(0, -1, 0); 
-
-        // 6. Adiciona a física na caixa da formiga!
-        const antAggregate = new BABYLON.PhysicsAggregate(
-            antCollider, 
-            BABYLON.PhysicsShapeType.BOX,
-            { mass: 5, restitution: 0.1, friction: 0.8 }, // mass: 5 (peso dela), restitution: o quanto ela "quica"
-            scene
-        );
-
-        // Opcional: Para evitar que a formiga tombe e role como um dado quando você bater nela,
-        // podemos travar a inércia dela para que ela só gire no eixo Y (como um pião):
-        antAggregate.body.setMassProperties({ inertia: new BABYLON.Vector3(0, 1, 0) });
-    });
+            antPhysicsBody = antAggregate.body;
+            antColliderRef = antCollider;
+            console.log('✓ Formiga estática carregada');
+        })
+        .catch((err) => console.error('Erro ao carregar formiga:', err));
 
     return scene;
 }
@@ -675,30 +788,19 @@ async function createScene() {
 // MATH HELPERS
 // ══════════════════════════════════════════════════════════════════════════════
 function slerpQuat(q0, q1, t) {
-    let dot = q0.x * q1.x + q0.y * q1.y + q0.z * q1.z + q0.w * q1.w;
+    let dot = q0.x*q1.x + q0.y*q1.y + q0.z*q1.z + q0.w*q1.w;
     const s = dot < 0 ? -1 : 1;
-    const a = { x: q1.x * s, y: q1.y * s, z: q1.z * s, w: q1.w * s };
+    const a = { x: q1.x*s, y: q1.y*s, z: q1.z*s, w: q1.w*s };
     dot = Math.abs(dot);
     if (dot > 0.9995) {
-        const r = {
-            x: q0.x + (a.x - q0.x) * t, y: q0.y + (a.y - q0.y) * t,
-            z: q0.z + (a.z - q0.z) * t, w: q0.w + (a.w - q0.w) * t,
-        };
-        const len = Math.sqrt(r.x * r.x + r.y * r.y + r.z * r.z + r.w * r.w);
-        return { x: r.x / len, y: r.y / len, z: r.z / len, w: r.w / len };
+        const r   = { x: q0.x+(a.x-q0.x)*t, y: q0.y+(a.y-q0.y)*t, z: q0.z+(a.z-q0.z)*t, w: q0.w+(a.w-q0.w)*t };
+        const len = Math.sqrt(r.x*r.x + r.y*r.y + r.z*r.z + r.w*r.w);
+        return { x: r.x/len, y: r.y/len, z: r.z/len, w: r.w/len };
     }
-    const theta0 = Math.acos(dot);
-    const theta = theta0 * t;
-    const sinTheta = Math.sin(theta);
-    const sinTheta0 = Math.sin(theta0);
-    const sc0 = Math.cos(theta) - dot * sinTheta / sinTheta0;
-    const sc1 = sinTheta / sinTheta0;
-    return {
-        x: q0.x * sc0 + a.x * sc1, y: q0.y * sc0 + a.y * sc1,
-        z: q0.z * sc0 + a.z * sc1, w: q0.w * sc0 + a.w * sc1,
-    };
+    const theta0 = Math.acos(dot), theta = theta0 * t;
+    const sinT   = Math.sin(theta), sinT0 = Math.sin(theta0);
+    const sc0 = Math.cos(theta) - dot * sinT / sinT0, sc1 = sinT / sinT0;
+    return { x: q0.x*sc0+a.x*sc1, y: q0.y*sc0+a.y*sc1, z: q0.z*sc0+a.z*sc1, w: q0.w*sc0+a.w*sc1 };
 }
 
-function quatToObj(q) {
-    return { x: q.x, y: q.y, z: q.z, w: q.w };
-}
+function quatToObj(q) { return { x: q.x, y: q.y, z: q.z, w: q.w }; }

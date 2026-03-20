@@ -1,0 +1,10 @@
+const antCollider = BABYLON.MeshBuilder.CreateBox(
+                'antCollider', { width: 1, height: 1, depth: 1.7 }, scene
+            );
+            antCollider.position = new BABYLON.Vector3(10, 3, 10);
+            antCollider.isVisible = false;
+
+            // Parenteia o modelo 3D na caixa de colisão
+            todasAsMalhas[0].scaling  = new BABYLON.Vector3(1, 1, 1);
+            todasAsMalhas[0].parent   = antCollider;
+            todasAsMalhas[0].position = new BABYLON.Vector3(0, 0, 0);
