@@ -5,34 +5,58 @@ import http from 'http';
 // ══════════════════════════════════════════════════════════════════════════════
 // CONFIG
 // ══════════════════════════════════════════════════════════════════════════════
-const PORT              = 8080;
-const BROADCAST_HZ      = 20;
-const BROADCAST_MS      = 1000 / BROADCAST_HZ;
-const MAX_XZ_SPEED      = 6 * 2.5;
-const MAX_XZ_SPEED_SQ   = MAX_XZ_SPEED * MAX_XZ_SPEED;
+const PORT = 8080;
+const BROADCAST_HZ = 20;
+const BROADCAST_MS = 1000 / BROADCAST_HZ;
+const MAX_XZ_SPEED = 6 * 2.5;
+const MAX_XZ_SPEED_SQ = MAX_XZ_SPEED * MAX_XZ_SPEED;
 const MAX_POSITION_DELTA = 25;
 
 // Chat
 const CHAT_RATE_LIMIT_MS = 1500;
-const CHAT_MAX_LENGTH    = 200;
-const NICKNAME_MAX_LEN   = 20;
+const CHAT_MAX_LENGTH = 200;
+const NICKNAME_MAX_LEN = 20;
 
 // Weapon anti-cheat
-const BAT_MAX_DIST_SQ    = 400;     // 20² metres — reject hits from further away
-const BAT_MAX_FORCE      = 50;      // clamp impulse magnitude
+const BAT_MAX_DIST_SQ = 400;     // 20² metres — reject hits from further away
+const BAT_MAX_FORCE = 50;      // clamp impulse magnitude
+
+// Ant Configuration
+const NUM_ANTS = 5;
+const ANT_BASE_SPEED = 20;     // units/s
+const ANT_SPEED_VAR = 20;
+const ANT_MIN_SCALE = 0.3;
+const ANT_MAX_SCALE = 5.5;
+const ANT_DETECT_RANGE = 700;  // metres
 
 // ══════════════════════════════════════════════════════════════════════════════
-// CLIENT STATE
+// CLIENT & ENTITY STATE
 // ══════════════════════════════════════════════════════════════════════════════
+const antsState = [];
+for (let i = 0; i < NUM_ANTS; i++) {
+    antsState.push({
+        id: i,
+        p: { x: (Math.random() - 0.5) * 100, y: 10, z: (Math.random() - 0.5) * 100 },
+        rY: Math.random() * Math.PI * 2,
+        scale: ANT_MIN_SCALE + Math.random() * (ANT_MAX_SCALE - ANT_MIN_SCALE),
+        speed: ANT_BASE_SPEED + (Math.random() - 0.5) * ANT_SPEED_VAR
+    });
+}
+
+function getProceduralHeight(x, z) {
+    return Math.sin(x * 0.02) * Math.cos(z * 0.02) * 8
+        + Math.sin(x * 0.05) * Math.cos(z * 0.05) * 3;
+}
+
 function makeClientState() {
     return {
-        pos:              { x: 0, y: 5, z: 0 },
-        vel:              { x: 0, y: 0, z: 0 },
-        rot:              { x: 0, y: 0, z: 0, w: 1 },
-        nickname:         'Player',
+        pos: { x: 0, y: 5, z: 0 },
+        vel: { x: 0, y: 0, z: 0 },
+        rot: { x: 0, y: 0, z: 0, w: 1 },
+        nickname: 'Player',
         lastProcessedSeq: 0,
-        lastUpdateTime:   Date.now(),
-        lastChatTime:     0,
+        lastUpdateTime: Date.now(),
+        lastChatTime: 0,
     };
 }
 
@@ -102,7 +126,7 @@ const httpServer = http.createServer((req, res) => {
 const wss = new WebSocketServer({ server: httpServer });
 
 wss.on('connection', (ws) => {
-    const id    = uuidv4();
+    const id = uuidv4();
     const state = makeClientState();
     clients.set(id, { ws, state });
 
@@ -125,7 +149,7 @@ wss.on('connection', (ws) => {
     // ── All incoming messages ─────────────────────────────────────────────────
     ws.on('message', (raw) => {
         try {
-            const msg    = JSON.parse(raw);
+            const msg = JSON.parse(raw);
             const client = clients.get(id);
             if (!client) return;
 
@@ -133,11 +157,11 @@ wss.on('connection', (ws) => {
             if (msg.type === 'state') {
                 const validated = validateState(client.state, msg);
                 if (!validated) return;
-                client.state.pos              = validated.pos;
-                client.state.vel              = validated.vel;
-                client.state.rot              = validated.rot;
+                client.state.pos = validated.pos;
+                client.state.vel = validated.vel;
+                client.state.rot = validated.rot;
                 client.state.lastProcessedSeq = msg.seq;
-                client.state.lastUpdateTime   = Date.now();
+                client.state.lastUpdateTime = Date.now();
             }
 
             // ── Nickname change ───────────────────────────────────────────────
@@ -173,9 +197,9 @@ wss.on('connection', (ws) => {
                 if (!target || target.ws.readyState !== WebSocket.OPEN) return;
 
                 // Proximity anti-cheat: attacker must be within 20 metres of target
-                const dx      = client.state.pos.x - target.state.pos.x;
-                const dz      = client.state.pos.z - target.state.pos.z;
-                const distSq  = dx * dx + dz * dz;
+                const dx = client.state.pos.x - target.state.pos.x;
+                const dz = client.state.pos.z - target.state.pos.z;
+                const distSq = dx * dx + dz * dz;
                 if (distSq > BAT_MAX_DIST_SQ) return;
 
                 const safeDir = clampDir(dir);
@@ -183,10 +207,10 @@ wss.on('connection', (ws) => {
 
                 // Forward the hit to the target player only
                 target.ws.send(JSON.stringify({
-                    type:         'bat_hit',
-                    fromId:       id,
+                    type: 'bat_hit',
+                    fromId: id,
                     fromNickname: client.state.nickname,
-                    dir:          safeDir,
+                    dir: safeDir,
                 }));
 
                 // Tell everyone (including attacker) to play the swing animation
@@ -203,8 +227,8 @@ wss.on('connection', (ws) => {
                     : null;
 
                 broadcastAll({
-                    type:           'kill_feed',
-                    killedId:       id,
+                    type: 'kill_feed',
+                    killedId: id,
                     killedNickname: client.state.nickname,
                     killerNickname: killerNickname || null,
                 }, null);
@@ -228,15 +252,60 @@ wss.on('connection', (ws) => {
 // ══════════════════════════════════════════════════════════════════════════════
 // BROADCAST LOOP — 20 Hz
 // ══════════════════════════════════════════════════════════════════════════════
+let lastLoopTime = Date.now();
+
 setInterval(() => {
-    if (clients.size === 0) return;
-    const t      = Date.now();
-    const states = {};
-    for (const [cid, { state }] of clients) {
-        states[cid] = { p: state.pos, v: state.vel, r: state.rot, s: state.lastProcessedSeq, n: state.nickname };
+    const now = Date.now();
+    const dt = (now - lastLoopTime) / 1000.0;
+    lastLoopTime = now;
+
+    if (clients.size > 0) {
+        // --- Ants AI ---
+        for (const ant of antsState) {
+            let nearestP = null;
+            let nearestDist = Infinity;
+
+            for (const [cid, { state }] of clients) {
+                const dx = state.pos.x - ant.p.x;
+                const dy = state.pos.y - ant.p.y;
+                const dz = state.pos.z - ant.p.z;
+                const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+
+                if (dist < ANT_DETECT_RANGE && dist < nearestDist) {
+                    nearestP = state.pos;
+                    nearestDist = dist;
+                }
+            }
+
+            if (nearestP) {
+                const dx = nearestP.x - ant.p.x;
+                const dz = nearestP.z - ant.p.z;
+                const len = Math.sqrt(dx * dx + dz * dz);
+
+                if (len > 0.5) {
+                    const step = ant.speed * dt;
+                    const actualStep = Math.min(step, len - 0.5); // prevent overshoot
+                    if (actualStep > 0) {
+                        ant.p.x += (dx / len) * actualStep;
+                        ant.p.z += (dz / len) * actualStep;
+                        ant.rY = Math.atan2(dx / len, dz / len);
+                    }
+                }
+            }
+
+            // Stick to terrain (adjusted slightly by scale to prevent clipping)
+            ant.p.y = getProceduralHeight(ant.p.x, ant.p.z) + (3 * ant.scale);
+        }
+
+        // --- Broadcast ---
+        const states = {};
+        for (const [cid, { state }] of clients) {
+            states[cid] = { p: state.pos, v: state.vel, r: state.rot, s: state.lastProcessedSeq, n: state.nickname };
+        }
+        broadcastAll({ type: 'world_state', t: now, states, ants: antsState }, null);
     }
-    broadcastAll({ type: 'world_state', t, states }, null);
 }, BROADCAST_MS);
+
 
 // ══════════════════════════════════════════════════════════════════════════════
 // HELPERS
