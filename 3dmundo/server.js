@@ -19,15 +19,15 @@ const NICKNAME_MAX_LEN = 20;
 
 // Weapon anti-cheat
 const BAT_MAX_DIST_SQ = 400;     // 20² metres — reject hits from further away
-const BAT_MAX_FORCE = 50;      // clamp impulse magnitude
+const BAT_MAX_FORCE = 100;      // clamp impulse magnitude
 
 // Ant Configuration
 const NUM_ANTS = 5;
 const ANT_BASE_SPEED = 20;     // units/s
 const ANT_SPEED_VAR = 20;
 const ANT_MIN_SCALE = 0.3;
-const ANT_MAX_SCALE = 5.5;
-const ANT_DETECT_RANGE = 700;  // metres
+const ANT_MAX_SCALE = 1.5;
+const ANT_DETECT_RANGE = 300;  // metres
 
 // ══════════════════════════════════════════════════════════════════════════════
 // CLIENT & ENTITY STATE
@@ -39,7 +39,8 @@ for (let i = 0; i < NUM_ANTS; i++) {
         p: { x: (Math.random() - 0.5) * 100, y: 10, z: (Math.random() - 0.5) * 100 },
         rY: Math.random() * Math.PI * 2,
         scale: ANT_MIN_SCALE + Math.random() * (ANT_MAX_SCALE - ANT_MIN_SCALE),
-        speed: ANT_BASE_SPEED + (Math.random() - 0.5) * ANT_SPEED_VAR
+        speed: ANT_BASE_SPEED + (Math.random() - 0.5) * ANT_SPEED_VAR,
+        v: { x: 0, y: 0, z: 0 }
     });
 }
 
@@ -236,6 +237,31 @@ wss.on('connection', (ws) => {
                 console.log(`[${id.slice(0, 8)}] eliminated by ${killerNickname || 'fall'}`);
             }
 
+            // ── Ant hit ───────────────────────────────────────────────────────
+            else if (msg.type === 'ant_hit') {
+                const { antId, dir } = msg;
+                const ant = antsState.find(a => a.id === antId);
+                if (!ant) return;
+
+                // Simple proximity check: attacker must be within range of ant
+                const dx = client.state.pos.x - ant.p.x;
+                const dz = client.state.pos.z - ant.p.z;
+                const distSq = dx * dx + dz * dz;
+                if (distSq > BAT_MAX_DIST_SQ) return;
+
+                const safeDir = clampDir(dir);
+                if (!safeDir) return;
+
+                // Apply knockback to ant
+                ant.v.x += safeDir.x * 2; // Ants are lighter?
+                ant.v.z += safeDir.z * 2;
+                ant.v.y += safeDir.y * 2;
+
+                // Everyone plays swing animation
+                broadcastAll({ type: 'swing_event', fromId: id }, null);
+                console.log(`[${id.slice(0, 8)}] ant_hit → ant ${antId}`);
+            }
+
         } catch { /* ignore malformed JSON */ }
     });
 
@@ -293,8 +319,23 @@ setInterval(() => {
                 }
             }
 
+            // Apply and decay velocity (knockback)
+            ant.p.x += ant.v.x * dt;
+            ant.p.y += ant.v.y * dt;
+            ant.p.z += ant.v.z * dt;
+
+            ant.v.x *= Math.pow(0.1, dt); // fast decay
+            ant.v.y *= Math.pow(0.1, dt);
+            ant.v.z *= Math.pow(0.1, dt);
+
+            if (Math.abs(ant.v.y) > 0.1) ant.v.y -= 9.81 * 2 * dt; // extra gravity for ants when launched
+
             // Stick to terrain (adjusted slightly by scale to prevent clipping)
-            ant.p.y = getProceduralHeight(ant.p.x, ant.p.z) + (3 * ant.scale);
+            const terrainY = getProceduralHeight(ant.p.x, ant.p.z) + (3 * ant.scale);
+            if (ant.p.y < terrainY) {
+                ant.p.y = terrainY;
+                ant.v.y = 0;
+            }
         }
 
         // --- Broadcast ---

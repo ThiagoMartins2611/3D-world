@@ -21,15 +21,18 @@ const ANT_MOVE_SPEED = 55;     // units/s – ant pursuit speed
 const ANT_DETECT_RANGE = 700;    // metres – how far the ant can detect a player
 
 // ── WEAPON ────────────────────────────────────────────────────────────────────
-const BAT_REST_Z = 0.6;    // rad – bat raised to the side (rest)
-const BAT_END_Z = -1.8;   // rad – follow-through lateral swing
-const SWING_DURATION = 0.18;  // seconds for main swing arc
-const RECOVERY_DURATION = 0.30;  // seconds to return to rest
-const BAT_HIT_T_FRACTION = 0.45;  // point in swing [0-1] when hit-check fires
-const BAT_HIT_IMPULSE_XZ = 30;    // horizontal force on target
-const BAT_HIT_IMPULSE_Y = 16;    // vertical force on target
-const BAT_HIT_RANGE = 5.5;   // metres (bat tip to target centre)
-const SWING_COOLDOWN_MS = 520;   // min ms between swings
+// Bat animation: idle = vertical (up). Attack = windup back-right → strike left.
+const BAT_WINDUP_ROT = { x: -0.3, y: -0.9, z: 0.5 }; // anticipation: cocked back-right
+const BAT_STRIKE_ROT = { x: 0.1, y: 1.5, z: -0.5 }; // end of sweep: through to left
+const WINDUP_DURATION = 0.08;  // seconds – fast anticipation windup
+const SWING_DURATION = 0.18;  // seconds – main lateral strike
+const RECOVERY_DURATION = 0.28;  // seconds – return to vertical idle
+const BAT_HIT_T_FRACTION = 0.5;  // fraction into strike phase when hit-cone fires
+const BAT_HIT_IMPULSE_XZ = 3140;   // horizontal impulse on target
+const BAT_HIT_IMPULSE_Y = 200;   // vertical impulse on target
+const BAT_CONE_HALF_ANGLE = Math.PI / 3.5; // ~72° half-angle of the invisible hit cone
+const BAT_CONE_RANGE = 10.0;  // metres – cone reach from player centre
+const SWING_COOLDOWN_MS = 520;  // min ms between swings
 
 // ── WORLD ─────────────────────────────────────────────────────────────────────
 const DEATH_Y = -60;   // fall below this Y → eliminated & respawn
@@ -149,7 +152,7 @@ function createBat(scene, parentNode, idSuffix) {
     root.parent = parentNode;
     // Held to the right side, slightly forward and elevated
     root.position = new BABYLON.Vector3(0.6, 0.1, 0.2);
-    root.rotation = new BABYLON.Vector3(-0.25, 0, BAT_REST_Z);
+    root.rotation = new BABYLON.Vector3(0, 0, 80); // idle: bat vertical, pointing straight up
 
     // Handle: 0 → 1.0 along local Y (bigger)
     const handle = BABYLON.MeshBuilder.CreateCylinder('batH' + idSuffix, {
@@ -188,9 +191,18 @@ async function createScene() {
     const hk = new BABYLON.HavokPlugin(true, havokInstance);
     scene.enablePhysics(new BABYLON.Vector3(0, -9.81, 0), hk);
 
-    // ── Light ─────────────────────────────────────────────────────────────────
-    const light = new BABYLON.HemisphericLight('light', new BABYLON.Vector3(0, 1, 0), scene);
-    light.intensity = 0.8;
+    // ── Lighting & Shadows ──────────────────────────────────────────────────
+    const hemiLight = new BABYLON.HemisphericLight('hemiLight', new BABYLON.Vector3(0, 1, 0), scene);
+    hemiLight.intensity = 0.4;
+    hemiLight.groundColor = new BABYLON.Color3(0.2, 0.2, 0.3);
+
+    const dirLight = new BABYLON.DirectionalLight('dirLight', new BABYLON.Vector3(-1, -2, -1), scene);
+    dirLight.position = new BABYLON.Vector3(20, 40, 20);
+    dirLight.intensity = 0.8;
+
+    const shadowGen = new BABYLON.ShadowGenerator(1024, dirLight);
+    shadowGen.useBlurExponentialShadowMap = true;
+    shadowGen.blurKernel = 32;
 
     // ── Local player — random spawn ───────────────────────────────────────────
     const sp = randomSpawn();
@@ -202,6 +214,7 @@ async function createScene() {
     const boxMat = new BABYLON.StandardMaterial('boxMat', scene);
     boxMat.diffuseColor = new BABYLON.Color3(0, 0.8, 1);
     box.material = boxMat;
+    shadowGen.addShadowCaster(box);
 
     const boxAggregate = new BABYLON.PhysicsAggregate(
         box, BABYLON.PhysicsShapeType.BOX,
@@ -247,6 +260,7 @@ async function createScene() {
     groundMat.diffuseTexture = groundTexture;
     groundMat.specularColor = new BABYLON.Color3(0.05, 0.05, 0.05);
     ground.material = groundMat;
+    ground.receiveShadows = true;
 
     // Ground is already configured above with the texture
 
@@ -275,7 +289,7 @@ async function createScene() {
         const now = performance.now();
         if (swingPhase !== 'idle' || now - lastSwingTime < SWING_COOLDOWN_MS) return;
         lastSwingTime = now;
-        swingPhase = 'swing';
+        swingPhase = 'windup';
         swingT = 0;
         hitCheckedThisSwing = false;
     }
@@ -283,32 +297,64 @@ async function createScene() {
     function checkBatHit() {
         if (!clientId || ws.readyState !== WebSocket.OPEN) return;
 
-        batRoot.computeWorldMatrix(true);
-        // Bat tip is at local (0, 1.75, 0) inside batRoot (bigger bat)
-        const batTip = BABYLON.Vector3.TransformCoordinates(
-            new BABYLON.Vector3(0, 1.75, 0),
-            batRoot.getWorldMatrix()
-        );
+        // ── Invisible cone hitbox in front of the player ──────────────────────
+        // The bat mesh has no collision role; damage comes from this cone only.
+        const playerPos = box.position;
+        const fwdDir = camera.getDirection(BABYLON.Vector3.Forward());
+        fwdDir.y = 0;
+        if (fwdDir.length() < 0.001) return;
+        fwdDir.normalize();
 
+        const cosHalf = Math.cos(BAT_CONE_HALF_ANGLE);
+
+        // Check other players
         for (const [rid, p] of otherPlayers) {
-            if (BABYLON.Vector3.Distance(batTip, p.mesh.position) <= BAT_HIT_RANGE) {
-                const dir = p.mesh.position.subtract(box.position);
-                dir.y = 0;
-                if (dir.length() < 0.001) dir.x = 1;
-                dir.normalize().scaleInPlace(BAT_HIT_IMPULSE_XZ);
-                dir.y = BAT_HIT_IMPULSE_Y;
+            const toTarget = p.mesh.position.subtract(playerPos);
+            toTarget.y = 0;
+            const dist = toTarget.length();
+            if (dist < 0.001 || dist > BAT_CONE_RANGE) continue;
+            if (BABYLON.Vector3.Dot(fwdDir, toTarget.normalize()) < cosHalf) continue;
 
-                ws.send(JSON.stringify({
-                    type: 'bat_hit',
-                    targetId: rid,
-                    dir: { x: dir.x, y: dir.y, z: dir.z },
-                }));
+            const dir = p.mesh.position.subtract(box.position);
+            dir.y = 0;
+            if (dir.length() < 0.001) dir.x = 1;
+            dir.normalize().scaleInPlace(BAT_HIT_IMPULSE_XZ);
+            dir.y = BAT_HIT_IMPULSE_Y;
 
-                // Flash bat red on hit
-                batMat.emissiveColor = new BABYLON.Color3(1, 0.1, 0);
-                setTimeout(() => { batMat.emissiveColor = BABYLON.Color3.Black(); }, 180);
-                break;
-            }
+            ws.send(JSON.stringify({
+                type: 'bat_hit',
+                targetId: rid,
+                dir: { x: dir.x, y: dir.y, z: dir.z },
+            }));
+
+            batMat.emissiveColor = new BABYLON.Color3(1, 0.1, 0);
+            setTimeout(() => { batMat.emissiveColor = BABYLON.Color3.Black(); }, 180);
+            return; // one target per swing
+        }
+
+        // Check ants
+        for (const ant of localAnts) {
+            const toTarget = ant.collider.position.subtract(playerPos);
+            toTarget.y = 0;
+            const dist = toTarget.length();
+            if (dist < 0.001 || dist > BAT_CONE_RANGE) continue;
+            if (BABYLON.Vector3.Dot(fwdDir, toTarget.normalize()) < cosHalf) continue;
+
+            const dir = ant.collider.position.subtract(box.position);
+            dir.y = 0;
+            if (dir.length() < 0.001) dir.x = 1;
+            dir.normalize().scaleInPlace(BAT_HIT_IMPULSE_XZ);
+            dir.y = BAT_HIT_IMPULSE_Y;
+
+            ws.send(JSON.stringify({
+                type: 'ant_hit',
+                antId: ant.id,
+                dir: { x: dir.x, y: dir.y, z: dir.z },
+            }));
+
+            batMat.emissiveColor = new BABYLON.Color3(1, 0.5, 0);
+            setTimeout(() => { batMat.emissiveColor = BABYLON.Color3.Black(); }, 180);
+            break;
         }
     }
 
@@ -371,6 +417,8 @@ async function createScene() {
 
         // Bat parented directly to the remote player mesh
         const { root: remoteBatRoot } = createBat(scene, mesh, '_' + rid.substring(0, 6));
+
+        shadowGen.addShadowCaster(mesh);
 
         const label = document.createElement('div');
         label.textContent = resolvedNick;
@@ -482,7 +530,12 @@ async function createScene() {
                     antAggregate.body.setMotionType(BABYLON.PhysicsMotionType.ANIMATED);
                     antAggregate.body.setCollisionCallbackEnabled(true);
 
+                    // Add to shadows (loop through meshes of visualAnt)
+                    visualAnt.getChildMeshes().forEach(m => shadowGen.addShadowCaster(m));
+
                     localAnts.push({
+                        id: srvAnt.id,
+                        scale: srvAnt.scale,
                         collider: antCollider,
                         body: antAggregate.body,
                         snapshots: []
@@ -525,7 +578,7 @@ async function createScene() {
         } else if (msg.type === 'swing_event') {
             const p = otherPlayers.get(msg.fromId);
             if (p && p.swingPhase === 'idle') {
-                p.swingPhase = 'swing';
+                p.swingPhase = 'windup';
                 p.swingT = 0;
             }
 
@@ -681,19 +734,41 @@ async function createScene() {
         const cf = camera.getDirection(BABYLON.Vector3.Forward());
         batHolder.rotation.y = Math.atan2(cf.x, cf.z);
 
-        // ── Local bat swing animation (lateral – Z axis) ─────────────────────
-        if (swingPhase === 'swing') {
+        // ── Local bat swing animation ──────────────────────────────────────────
+        // idle   : bat vertical (rot 0,0,0)
+        // windup : anticipation – cocked back-right
+        // strike : lateral sweep left (hit cone fires at BAT_HIT_T_FRACTION)
+        // recovery: returns to vertical
+        if (swingPhase === 'windup') {
+            swingT = Math.min(swingT + dt / WINDUP_DURATION, 1);
+            batRoot.rotation.x = BAT_WINDUP_ROT.x * swingT;
+            batRoot.rotation.y = BAT_WINDUP_ROT.y * swingT;
+            batRoot.rotation.z = BAT_WINDUP_ROT.z * swingT;
+            if (swingT >= 1) { swingPhase = 'strike'; swingT = 0; }
+
+        } else if (swingPhase === 'strike') {
             swingT = Math.min(swingT + dt / SWING_DURATION, 1);
-            batRoot.rotation.z = BAT_REST_Z + (BAT_END_Z - BAT_REST_Z) * swingT;
+            batRoot.rotation.x = BAT_WINDUP_ROT.x + (BAT_STRIKE_ROT.x - BAT_WINDUP_ROT.x) * swingT;
+            batRoot.rotation.y = BAT_WINDUP_ROT.y + (BAT_STRIKE_ROT.y - BAT_WINDUP_ROT.y) * swingT;
+            batRoot.rotation.z = BAT_WINDUP_ROT.z + (BAT_STRIKE_ROT.z - BAT_WINDUP_ROT.z) * swingT;
+
             if (!hitCheckedThisSwing && swingT >= BAT_HIT_T_FRACTION) {
                 hitCheckedThisSwing = true;
                 checkBatHit();
             }
             if (swingT >= 1) { swingPhase = 'recovery'; swingT = 0; }
+
         } else if (swingPhase === 'recovery') {
             swingT = Math.min(swingT + dt / RECOVERY_DURATION, 1);
-            batRoot.rotation.z = BAT_END_Z + (BAT_REST_Z - BAT_END_Z) * swingT;
-            if (swingT >= 1) { swingPhase = 'idle'; swingT = 0; }
+            batRoot.rotation.x = BAT_STRIKE_ROT.x * (1 - swingT);
+            batRoot.rotation.y = BAT_STRIKE_ROT.y * (1 - swingT);
+            batRoot.rotation.z = BAT_STRIKE_ROT.z * (1 - swingT);
+            if (swingT >= 1) {
+                swingPhase = 'idle';
+                swingT = 0;
+                batRoot.rotation.set(0, 0, 0);
+                batRoot.scaling.setAll(1);
+            }
         }
 
         // ── Movement ──────────────────────────────────────────────────────────
@@ -761,7 +836,7 @@ async function createScene() {
             const localAnt = localAnts[antIdx];
             const snaps = localAnt.snapshots;
             if (snaps.length < 2) continue;
-            
+
             let lo = -1;
             for (let i = snaps.length - 1; i >= 0; i--) {
                 if (snaps[i].t <= renderTime) { lo = i; break; }
@@ -789,6 +864,12 @@ async function createScene() {
             }
 
             localAnt.collider.position.set(ap.x, ap.y, ap.z);
+            // ── Terrain snap: override Y with locally-computed ground height ──
+            // Interpolating Y linearly between server snapshots can dip below
+            // the terrain when the ant traverses slopes. Recalculate Y from the
+            // same formula used on the server so the ant always sits on the mesh.
+            const snapY = getProceduralHeight(ap.x, ap.z) + (3 * localAnt.scale);
+            localAnt.collider.position.y = snapY;
             localAnt.collider.rotation.y = arY;
 
             localAnt.body.setTargetTransform(
@@ -832,15 +913,40 @@ async function createScene() {
                 new BABYLON.Quaternion(ir.x, ir.y, ir.z, ir.w)
             );
 
-            // Remote bat swing animation (lateral – Z axis)
-            if (player.swingPhase === 'swing') {
+            // Remote bat swing animation — mirrors local 3-phase FSM
+            if (player.swingPhase === 'windup') {
+                player.swingT = Math.min(player.swingT + dt / WINDUP_DURATION, 1);
+                if (player.batRoot) {
+                    player.batRoot.rotation.x = BAT_WINDUP_ROT.x * player.swingT;
+                    player.batRoot.rotation.y = BAT_WINDUP_ROT.y * player.swingT;
+                    player.batRoot.rotation.z = BAT_WINDUP_ROT.z * player.swingT;
+                }
+                if (player.swingT >= 1) { player.swingPhase = 'strike'; player.swingT = 0; }
+
+            } else if (player.swingPhase === 'strike') {
                 player.swingT = Math.min(player.swingT + dt / SWING_DURATION, 1);
-                if (player.batRoot) player.batRoot.rotation.z = BAT_REST_Z + (BAT_END_Z - BAT_REST_Z) * player.swingT;
+                if (player.batRoot) {
+                    player.batRoot.rotation.x = BAT_WINDUP_ROT.x + (BAT_STRIKE_ROT.x - BAT_WINDUP_ROT.x) * player.swingT;
+                    player.batRoot.rotation.y = BAT_WINDUP_ROT.y + (BAT_STRIKE_ROT.y - BAT_WINDUP_ROT.y) * player.swingT;
+                    player.batRoot.rotation.z = BAT_WINDUP_ROT.z + (BAT_STRIKE_ROT.z - BAT_WINDUP_ROT.z) * player.swingT;
+                }
                 if (player.swingT >= 1) { player.swingPhase = 'recovery'; player.swingT = 0; }
+
             } else if (player.swingPhase === 'recovery') {
                 player.swingT = Math.min(player.swingT + dt / RECOVERY_DURATION, 1);
-                if (player.batRoot) player.batRoot.rotation.z = BAT_END_Z + (BAT_REST_Z - BAT_END_Z) * player.swingT;
-                if (player.swingT >= 1) { player.swingPhase = 'idle'; player.swingT = 0; }
+                if (player.batRoot) {
+                    player.batRoot.rotation.x = BAT_STRIKE_ROT.x * (1 - player.swingT);
+                    player.batRoot.rotation.y = BAT_STRIKE_ROT.y * (1 - player.swingT);
+                    player.batRoot.rotation.z = BAT_STRIKE_ROT.z * (1 - player.swingT);
+                }
+                if (player.swingT >= 1) {
+                    player.swingPhase = 'idle';
+                    player.swingT = 0;
+                    if (player.batRoot) {
+                        player.batRoot.rotation.set(0, 0, 0);
+                        player.batRoot.scaling.setAll(1);
+                    }
+                }
             }
 
             // Nickname label projection
@@ -867,7 +973,7 @@ async function createScene() {
         .then((resultado) => {
             const malhaFormiga = resultado.meshes[0];
             malhaFormiga.isVisible = false;
-            
+
             // Oculta todos os filhos do modelo importado
             resultado.meshes.forEach(m => {
                 m.isVisible = false;
